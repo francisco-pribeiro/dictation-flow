@@ -93,6 +93,7 @@ export DICTFLOW_SIGN_IDENTITY='DictFlow Local'
 uv run pytest -q
 build/DictFlow.app/Contents/MacOS/DictFlow --pipeline-test tests/fixtures/pt_facto.wav
 #    expected last line: O facto é que a equipa precisa do contacto antes de sexta-feira.
+#    (quit DictFlow first: a running worker on 8765 is reused instead of the new build's; see Usage)
 ```
 
 ## Run
@@ -140,7 +141,7 @@ Every variable is optional. With none set, the app uses local Parakeet, no clean
 | `ANTHROPIC_API_KEY` | empty | Required only for `DICTFLOW_CLEANUP=anthropic` |
 | `GROQ_API_KEY` | empty | Required only for `DICTFLOW_ENGINE=groq` |
 | `DICTFLOW_PORT` | `8765` | Worker port on `127.0.0.1`. If you change it, also launch the app with `open --env DICTFLOW_PORT=...`, otherwise the app polls 8765 |
-| `DICTFLOW_HOTKEY` | `rightoption` | App only, not read from `.env`: `rightoption`, `rightcmd`, `rightctrl` or `fn`. Default only: a choice saved in `settings.json` (menu Atalho) wins. Set it with `open --env` (see Run) |
+| `DICTFLOW_HOTKEY` | `rightoption` | App only, not read from `.env`: any `hotkey` name listed under settings.json (e.g. `rightcmd`, `rightctrl`, `fn`). Default only: a choice saved in `settings.json` (menu Atalho) wins. Set it with `open --env` (see Run) |
 | `DICTFLOW_SIGN_IDENTITY` | ad hoc | `build.sh` only: signing identity name (see Signing) |
 
 How cleanup fails safe: its timeout scales with the text (2 s + 1 s per 100 characters, max 10 s), the worker warms the provider in the background at startup (for Ollama also set `OLLAMA_KEEP_ALIVE=-1`), the transcript is escaped inside the prompt, and the output is checked (length, refusals, and that the original words mostly survive, allowing for removed fillers and PT-BR to PT-PT respellings). On any failure the raw transcript is pasted.
@@ -214,7 +215,7 @@ Where it is used:
 2. In the cleanup prompt (`anthropic`/`openai`), as a delimited, escaped list marked as vocabulary and never as instructions (max 150 entries / 3000 characters). The content guardrail accepts dictionary words in the output.
 3. For `whisper`/`groq`, terms and Right forms are appended to `DICTFLOW_PROMPT` (at most 500 characters, `DICTFLOW_PROMPT` first).
 
-The file is local only. It is sent nowhere except, when cleanup is enabled, as part of the cleanup request to your configured provider. Plain `Term` entries are not forced onto the raw transcript without cleanup; use `wrong -> Right` for that.
+The file is stored locally only. Its contents leave the machine in two cases: as part of the cleanup request to your configured provider when cleanup is on, and, with `DICTFLOW_ENGINE=groq`, as the ASR prompt sent to Groq on every dictation (also with cleanup off and in password fields). With `parakeet` or `whisper` and cleanup off it is sent nowhere. Plain `Term` entries are not forced onto the raw transcript without cleanup; use `wrong -> Right` for that.
 
 ## Signing
 
@@ -233,7 +234,7 @@ Add the export to your shell profile to keep it. Grant permissions once after th
 
 ## Usage
 
-**App:** hold **right Option**, speak, release; the text is pasted into the focused app. The menu-bar icon shows idle (`◦`), recording (`●`) or transcribing (`…`); `!` means a permission is missing or the hotkey is not active. The menu has the last transcript (click to copy), Check permissions, and Quit.
+**App:** hold **right Option**, speak, release; the text is pasted into the focused app. The menu-bar icon shows idle (`◦`), recording (`●`) or transcribing (`…`); `!` means a permission is missing or the hotkey is not active. The menu has the last transcript (click to copy), Check permissions, Colar/Copiar ultima transcricao, Atalho, Dicionario, and Quit.
 
 **CLI** (no permissions needed; run from the repo root):
 
@@ -261,12 +262,14 @@ Headless self-tests of the app binary (after `./build.sh`):
 
 ```bash
 build/DictFlow.app/Contents/MacOS/DictFlow --convert tests/fixtures/pt_facto.wav /tmp/out.wav   # Swift WAV conversion
-build/DictFlow.app/Contents/MacOS/DictFlow --pipeline-test tests/fixtures/pt_facto.wav          # spawns the worker, transcribes, stops it
+build/DictFlow.app/Contents/MacOS/DictFlow --pipeline-test tests/fixtures/pt_facto.wav          # spawns the worker, transcribes, stops it (see note below)
 build/DictFlow.app/Contents/MacOS/DictFlow --clipboard-test                                     # clipboard snapshot and restore; prints PASS
 build/DictFlow.app/Contents/MacOS/DictFlow --settings-test                                      # settings.json load/save, corrupt file, precedence, hotkey capture logic; prints PASS
 build/DictFlow.app/Contents/MacOS/DictFlow --hotkey-test                                        # hold/tap/double-tap/triple-tap/busy/Esc state machine; prints PASS
 build/DictFlow.app/Contents/MacOS/DictFlow --shortcut-test                                      # paste shortcut parsing, matching, capture; prints PASS
 ```
+
+`--pipeline-test` reuses any healthy worker already on the port: with DictFlow.app (or `dictflow serve`) running, it tests that worker, with that checkout's `.env`, not the one you just built. To test the fresh build's own worker, quit the app first or use another port: `DICTFLOW_PORT=8799 build/DictFlow.app/Contents/MacOS/DictFlow --pipeline-test tests/fixtures/pt_facto.wav`.
 
 `--check-permissions` also exists, but run from a shell it reports the terminal's grants, not DictFlow's. Use the menu's Check permissions (with the `--stderr` log above) for the real state.
 
@@ -325,9 +328,12 @@ These steps need a GUI and your hands; no automated test covers them. Do them on
 ## Known limitations
 
 - Neither ASR engine controls the Portuguese dialect, so PT-BR spellings can appear in the raw transcript. Only the cleanup pass fixes them; with cleanup off you get what the engine gives. `bench` flags BR forms so you can A/B engines on your own voice.
-- The cleanup guardrail accepts filler removal, single self-corrections and the common BR to PT-PT respellings, but rejects chains of corrections ("segunda, não, terça, não, quarta"); you then get the raw text. It cannot tell a wrong word swap ("cem" to "mil", a dropped "não") from a correction.
+- The cleanup guardrail accepts filler removal, single self-corrections and the common BR to PT-PT respellings, but rejects chains of corrections ("segunda, não, terça, não, quarta"); you then get the raw text. It cannot tell a wrong word swap ("cem" to "mil", a dropped "não") from a correction, and it also accepts an output that flips a negation ("não envies o email" to "Envia o email.") or appends a short answer to a dictated question ("qual é a capital de frança" to "Qual é a capital de França? Paris.").
 - The silence check only catches digital silence. With room noise and `whisper` or `groq`, a hold with nothing said can paste invented text such as "Thank you." Parakeet returns nothing in the same case.
-- Secure input: when the frontmost app holds secure input (a password field), DictFlow skips cloud cleanup, does not paste, beeps and leaves the text on the clipboard with no expiry. With `DICTFLOW_ENGINE=groq` the audio is still sent to Groq, and the text shows in the menu's "Last:" item. Secure input held by a background app is ignored.
+- Secure input: when the frontmost app holds secure input (a password field), DictFlow skips cloud cleanup, does not paste, beeps and leaves the text on the clipboard with no expiry. With `DICTFLOW_ENGINE=groq` the audio is still sent to Groq. The text still becomes the last transcript: it shows in plain text in the menu's "Last:" item, the paste-last shortcut and Colar ultima transcricao paste it into any app, and Copiar ultima transcricao puts it on the clipboard without the concealed marker, so clipboard managers may keep it. Secure input held by a background app is ignored.
+- Shortcut capture has no timeout: after Gravar novo atalho de colar..., the next modifier+letter/digit chord with Ctrl or Opt is saved, even much later and even a text-producing one such as Opt+2 (`@` on the PT-PT layout) or Ctrl+C, which is then swallowed system-wide. Only Esc (or starting the other capture) ends it. Likewise, while Gravar novo atalho... is active, dictation is off and a click does not end it. Finish or Esc every capture you start.
+- A mouse click during a hold cancels the recording silently, however long you have been speaking (it is meant to drop Option+click). Release the key before clicking; in hands-free (`◉`) clicks are fine.
+- The dictionary file must be UTF-8. If it is saved in another encoding (e.g. Latin-1 with accented words), it is read as empty, and adding an entry from the menu or `dict add` overwrites it with only the new entry.
 - Starting a new dictation while the previous one is still being transcribed is ignored, with no beep.
 - A lone tap still starts and cancels a short recording (so the microphone indicator blinks), because the app cannot know a second tap is coming. Hands-free, the swallowing paste shortcut and the sound/icon feedback depend on macOS permissions and were not verified headless: only the state machine and shortcut parsing are unit-tested.
 - The app waits at most 15 s for the worker. A long dictation with `whisper` or `groq` plus a slow cleanup can exceed that, and the text is dropped with a beep.
