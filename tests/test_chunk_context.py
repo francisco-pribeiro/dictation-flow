@@ -139,7 +139,7 @@ class FakeWorker:
     def __init__(self):
         self.calls = []
 
-    def process(self, wav, do_cleanup, lang, context=None):
+    def process(self, wav, do_cleanup, lang, context=None, partial=False):
         self.calls.append(context)
         return {"raw": "r", "text": "texto", "cleanup_provider": "fake", "fell_back": False,
                 "timings_ms": {"decode": 1, "asr": 2, "cleanup": 3, "total": 6}, "engine": "fake", "raw_engine": "r"}
@@ -173,3 +173,78 @@ def test_server_passes_header_and_never_logs_context(capsys):
     assert "ctx=1" in err and err.count("ctx=1") == 1
     assert "Marta" not in err and "reunião" not in err and "texto" not in err
     assert b64(CTX) not in err
+
+
+# --- echo guardrail: a repeated phrase that cleanup respelled is not an echo ---------------------------
+
+def _echo_case(context, raw, out, d=None):
+    return cleanup.echoes_context(raw, out, context, d), cleanup._accept(raw, out, d, context)
+
+
+def test_repeated_phrase_with_dictionary_rewrite_is_not_an_echo():
+    from dictflow.dictionary import Dictionary
+    d = Dictionary(["whisper flow -> Wispr Flow"])
+    echo, accepted = _echo_case("Vou usar o Wispr Flow para isto hoje.", "depois vou usar o whisper flow para aquilo",
+                                "Depois vou usar o Wispr Flow para aquilo.", d)
+    assert not echo and accepted
+
+
+def test_repeated_phrase_with_accents_and_hyphens_is_not_an_echo():
+    echo, accepted = _echo_case("Envio o relatório/segunda-feira sem falta", "e envio o relatorio segunda feira sem falta",
+                                "E envio o relatório/segunda-feira sem falta.")
+    assert not echo and accepted
+
+
+def test_repeated_phrase_with_respelled_term_is_not_an_echo():
+    from dictflow.dictionary import Dictionary
+    d = Dictionary(["Order2Party"])
+    echo, accepted = _echo_case("Vou usar o Order2Party para isto hoje.", "depois vou usar o order to party para aquilo",
+                                "Depois vou usar o Order2Party para aquilo.", d)
+    assert not echo and accepted
+
+
+def test_real_echo_still_caught_after_folding():
+    out = "Marca a reunião para quarta às dez na sala grande, e confirma com a Marta."
+    assert cleanup.echoes_context("e confirma com a Marta", out, CTX)
+
+
+# --- partial segments ---------------------------------------------------------------------------------
+
+def test_partial_rule_only_when_partial_and_composes():
+    assert cleanup.system_prompt(None, None, False) is cleanup.SYSTEM
+    assert cleanup.system_prompt(None, None, True) == cleanup.SYSTEM + cleanup.PARTIAL_RULE
+    assert cleanup.system_prompt(None, "antes", True) == cleanup.SYSTEM + cleanup.CONTEXT_RULE + cleanup.PARTIAL_RULE
+
+
+def test_clean_passes_partial_only_when_set():
+    seen = []
+    cleanup.clean("hum olá mundo", "fake", call=lambda t, **kw: seen.append(kw) or "Olá mundo.", partial=True)
+    cleanup.clean("hum olá mundo", "fake", call=lambda t, **kw: seen.append(kw) or "Olá mundo.")
+    assert seen == [{"partial": True}, {}]
+
+
+def test_decode_session():
+    sid = "3F2504E0-4F89-41D3-9A0C-0305E82C3301"
+    assert server.decode_session(sid, "3") == ("3f2504e0", 3)
+    assert server.decode_session(sid, "x") is None and server.decode_session("../etc", "1") is None
+    assert server.decode_session(None, "1") is None
+
+
+def test_server_passes_partial_and_session_to_capture(monkeypatch):
+    w = FakeWorker()
+    got = []
+    monkeypatch.setattr(server.debug, "enabled", lambda: True)
+    monkeypatch.setattr(server.debug, "capture", lambda *a: got.append(a))
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(w, 0))
+    port = srv.server_address[1]
+    srv.RequestHandlerClass = server.make_handler(w, port)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        assert _post(port, {"X-DictFlow-Context": b64(CTX), "X-DictFlow-Partial": "1",
+                            "X-DictFlow-Session": "3f2504e0-4f89-41d3-9a0c-0305e82c3301", "X-DictFlow-Seq": "2"}) == 200
+        assert _post(port, {}) == 200
+        time.sleep(0.2)
+    finally:
+        srv.shutdown()
+    assert got[0][4] == {"session": "3f2504e0", "seq": 2, "chunked": True, "ctx": True, "partial": True, "context": CTX}
+    assert got[1][4] == {}

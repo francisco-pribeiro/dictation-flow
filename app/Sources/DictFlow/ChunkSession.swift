@@ -14,7 +14,8 @@ final class ChunkSession {
     /// every later segment is sent with cleanup=0.
     init(config: Segmenter.Config, chain: Bool, secureCheck: @escaping () -> Bool, transport: @escaping ChunkAssembler.Transport) {
         segmenter = Segmenter(config: config)
-        asm = ChunkAssembler(chain: chain, transport: transport)
+        // Random per dictation: lets the worker's opt-in debug capture group the pieces of one dictation.
+        asm = ChunkAssembler(chain: chain, session: UUID().uuidString, transport: transport)
         self.secureCheck = secureCheck
     }
 
@@ -77,7 +78,7 @@ extension ChunkSession {
             lock.lock(); seen.append((req.seq, req.context, req.wav.count)); lock.unlock()
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.02) { done(.success(.init(text: "S\(req.seq).", meta: nil))) }
         }
-        let s = ChunkSession(config: Segmenter.Config(), chain: true, secureCheck: { false }, transport: transport)
+        let s = ChunkSession(config: Segmenter.Config(minSpeechMs: 2500), chain: true, secureCheck: { false }, transport: transport)
         var off = 0
         while off < audio.count { let e = min(off + 2720, audio.count); s.feed(audio.subdata(in: off..<e)); off = e }
         let sem = DispatchSemaphore(value: 0)
@@ -94,7 +95,7 @@ extension ChunkSession {
         // No pauses: the one request is the whole recording as main would send it.
         let cont = tone(0.3, false) + tone(4, true) + tone(0.3, false)
         seen = []
-        let s2 = ChunkSession(config: Segmenter.Config(), chain: true, secureCheck: { false }, transport: transport)
+        let s2 = ChunkSession(config: Segmenter.Config(minSpeechMs: 2500), chain: true, secureCheck: { false }, transport: transport)
         s2.feed(cont)
         let sem2 = DispatchSemaphore(value: 0)
         s2.finish(secureAtRelease: false) { _ in sem2.signal() }
@@ -107,7 +108,7 @@ extension ChunkSession {
             lock.lock(); cleanups.append(req.cleanup); lock.unlock()
             done(.success(.init(text: "x", meta: nil)))
         }
-        let s3 = ChunkSession(config: Segmenter.Config(), chain: true, secureCheck: { true }, transport: t3)
+        let s3 = ChunkSession(config: Segmenter.Config(minSpeechMs: 2500), chain: true, secureCheck: { true }, transport: t3)
         s3.feed(audio)
         let sem3 = DispatchSemaphore(value: 0)
         s3.finish(secureAtRelease: false) { _ in sem3.signal() }
@@ -116,7 +117,7 @@ extension ChunkSession {
 
         // Esc: nothing is delivered.
         var delivered = false
-        let s4 = ChunkSession(config: Segmenter.Config(), chain: true, secureCheck: { false }, transport: transport)
+        let s4 = ChunkSession(config: Segmenter.Config(minSpeechMs: 2500), chain: true, secureCheck: { false }, transport: transport)
         s4.feed(audio); s4.cancel()
         s4.finish(secureAtRelease: false) { _ in delivered = true }
         Thread.sleep(forTimeInterval: 0.3)

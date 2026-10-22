@@ -63,9 +63,24 @@ def _write(path, data):
         f.write(data)
 
 
+_SESSION = re.compile(r"-s([0-9a-f]{8})-\d+$")
+
+
+def _dictation(stem):
+    """The pieces of one chunked dictation share a session id in their name and count as one dictation."""
+    m = _SESSION.search(stem)
+    return m.group(1) if m else stem
+
+
 def _prune(d, keep=KEEP):
     stems = sorted({p.stem for p in d.iterdir() if p.suffix in (".wav", ".json")})
-    for stem in stems[:-keep] if keep else stems:
+    last = {}   # dictation -> position of its newest piece
+    for i, stem in enumerate(stems):
+        last[_dictation(stem)] = i
+    keep_set = set(sorted(last, key=last.get)[-keep:]) if keep else set()
+    for stem in stems:
+        if _dictation(stem) in keep_set:
+            continue
         for ext in (".wav", ".json"):
             try:
                 (d / (stem + ext)).unlink()
@@ -73,19 +88,25 @@ def _prune(d, keep=KEEP):
                 pass
 
 
-def capture(wav, lang, res, raw_engine):
-    """Write the wav + json pair. Call only after the HTTP response is sent. Never raises."""
+def capture(wav, lang, res, raw_engine, chunk=None):
+    """Write the wav + json pair. Call only after the HTTP response is sent. Never raises.
+    `chunk` is set for a piece of a chunked dictation: session, seq, ctx flag and the read-only previous-segment
+    context itself (text, stored under the same opt-in as everything else here), so replay can reproduce it."""
     try:
         d = debug_dir()
         d.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(d, 0o700)
         stem = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}Z-{next(_counter):04d}"
+        if chunk and chunk.get("session") and chunk.get("seq") is not None:
+            stem += f"-s{chunk['session']}-{chunk['seq']}"
         info = {
             "raw_engine": raw_engine, "raw": res["raw"], "text": res["text"], "engine": res["engine"],
             "lang": lang, "cleanup_provider": res["cleanup_provider"], "fell_back": res["fell_back"],
             "timings_ms": res["timings_ms"], "guess_lang_raw_engine": guess_lang(raw_engine),
             "guess_lang_raw": guess_lang(res["raw"]), "guess_lang_text": guess_lang(res["text"]),
         }
+        if chunk:
+            info.update(chunk)
         _write(d / (stem + ".wav"), wav)
         _write(d / (stem + ".json"), json.dumps(info, ensure_ascii=False, indent=1).encode())
         _prune(d)
@@ -123,13 +144,26 @@ def run_replay(files, dirpath, engines, do_cleanup, as_json, make_engine=_defaul
         print("no wav files", file=sys.stderr)
         return 1
     if do_cleanup and clean is None:
-        clean = lambda t, d: cleanup.clean(t, d=d)  # noqa: E731
+        clean = lambda t, d, **kw: cleanup.clean(t, d=d, **kw)  # noqa: E731
     d = dictionary.current()
     loaded = {}
     results = []
     for w in wavs:
         samples = audio.trim_silence(audio.load_audio(w, fmt="wav"))
         row = {"file": w.name, "audio_s": round(len(samples) / audio.SR, 1), "engines": {}, "flags": []}
+        side = w.with_suffix(".json")
+        stored = None
+        if side.exists():
+            try:
+                stored = json.loads(side.read_text())
+            except (OSError, ValueError):
+                pass
+        # a piece of a chunked dictation is replayed with the same read-only context and mid-sentence flag
+        kw = {}
+        if stored and stored.get("context"):
+            kw["context"] = stored["context"]
+        if stored and stored.get("partial"):
+            kw["partial"] = True
         for name in engines:
             if name not in loaded:
                 eng, lg = make_engine(name)
@@ -145,22 +179,19 @@ def run_replay(files, dirpath, engines, do_cleanup, as_json, make_engine=_defaul
                 pass
             r = {"ms": ms, "lang": guess_lang(text), "text": text}
             if do_cleanup:
-                r["cleaned"] = clean(text, d)[0] if text else ""
+                r["cleaned"] = clean(text, d, **kw)[0] if text else ""
                 r["cleaned_lang"] = guess_lang(r["cleaned"])
             row["engines"][name] = r
         langs = {r["lang"] for r in row["engines"].values()} - {"unknown"}
         if len(langs) > 1:
             row["flags"].append("ENGINES DISAGREE: " + ", ".join(f"{n}={r['lang']}" for n, r in row["engines"].items()))
-        side = w.with_suffix(".json")
-        if side.exists():
-            try:
-                s = json.loads(side.read_text())
-                a, b = guess_lang(s.get("raw_engine", "")), guess_lang(s.get("text", ""))
-                row["stored"] = {"raw_engine_lang": a, "text_lang": b}
-                if "unknown" not in (a, b) and a != b:
-                    row["flags"].append(f"FLIPPED AFTER ENGINE: stored raw_engine={a} but final text={b} (cleanup/dictionary, not the engine)")
-            except (OSError, ValueError):
-                pass
+        if stored:
+            a, b = guess_lang(stored.get("raw_engine", "")), guess_lang(stored.get("text", ""))
+            row["stored"] = {"raw_engine_lang": a, "text_lang": b}
+            if stored.get("session"):
+                row["stored"].update(session=stored["session"], seq=stored.get("seq"), ctx=bool(stored.get("ctx")))
+            if "unknown" not in (a, b) and a != b:
+                row["flags"].append(f"FLIPPED AFTER ENGINE: stored raw_engine={a} but final text={b} (cleanup/dictionary, not the engine)")
         results.append(row)
     if as_json:
         print(json.dumps(results, ensure_ascii=False, indent=1), file=out)

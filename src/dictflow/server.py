@@ -4,6 +4,7 @@ import binascii
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -31,6 +32,18 @@ def decode_context(value):
         return None
     text = text.strip()
     return text if 0 < len(text) <= MAX_CONTEXT else None
+
+
+def decode_session(value, seq):
+    """X-DictFlow-Session (a random UUID) and X-DictFlow-Seq: which dictation and which piece of it a chunked
+    request is, for debug capture only. Anything malformed is ignored (None). Returns (session8, seq)."""
+    if not value or not re.fullmatch(r"[0-9a-fA-F-]{8,40}", value):
+        return None
+    try:
+        n = int(seq)
+    except (TypeError, ValueError):
+        return None
+    return value.replace("-", "").lower()[:8], n if 0 <= n < 10000 else None
 
 
 def _ms(t0):
@@ -68,7 +81,7 @@ class Worker:
             # Off the startup path: a hung cleanup endpoint must not keep /health down.
             threading.Thread(target=cleanup.warm, args=(self.provider,), daemon=True).start()
 
-    def process(self, wav, do_cleanup, lang, context=None):
+    def process(self, wav, do_cleanup, lang, context=None, partial=False):
         timings = {"decode": 0, "asr": 0, "cleanup": 0}
         t_all = time.perf_counter()
         with tempfile.NamedTemporaryFile(suffix=".wav") as f:
@@ -93,7 +106,7 @@ class Worker:
             pass  # a dictionary bug must never drop a dictation
         text, prov, fell_back = raw, "none", False
         if do_cleanup and raw:
-            text, prov, fell_back, timings["cleanup"] = cleanup.clean(raw, self.provider, d=d, context=context)
+            text, prov, fell_back, timings["cleanup"] = cleanup.clean(raw, self.provider, d=d, context=context, partial=partial)
         timings["total"] = _ms(t_all)
         return {"raw": raw, "text": text, "cleanup_provider": prov, "fell_back": fell_back, "timings_ms": timings,
                 "engine": self.engine.name, "raw_engine": raw_engine}
@@ -203,13 +216,19 @@ def make_handler(worker, port):
             default = "0" if worker.provider == "none" else "1"
             do_cleanup = q.get("cleanup", [default])[0] != "0"
             context = decode_context(self.headers.get("X-DictFlow-Context"))
+            partial = self.headers.get("X-DictFlow-Partial") == "1"
+            session = decode_session(self.headers.get("X-DictFlow-Session"), self.headers.get("X-DictFlow-Seq"))
             body = self.rfile.read(n)
             try:
-                res = worker.process(body, do_cleanup, lang, context=context)
+                kw = {k: v for k, v in (("context", context), ("partial", partial)) if v}   # main's call when neither is set
+                res = worker.process(body, do_cleanup, lang, **kw)
                 self._extra = timing_suffix(wav_seconds(body), res, context is not None)
                 raw_engine = res.pop("raw_engine", "")
                 if debug.enabled():
-                    self._capture = (body, lang, res, raw_engine)
+                    chunk = {"session": session[0], "seq": session[1]} if session else {}
+                    if context is not None or partial or session:
+                        chunk.update(chunked=True, ctx=context is not None, partial=partial, context=context)
+                    self._capture = (body, lang, res, raw_engine, chunk)
                 return 200, res
             except (RuntimeError, ValueError) as e:
                 msg = str(e)

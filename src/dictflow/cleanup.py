@@ -53,10 +53,15 @@ CONTEXT_RULE = ("\n- The <previous> block, when present, is text already written
                 "or the previous text ended a sentence.")
 
 
-def system_prompt(d=None, context=None):
-    """SYSTEM (plus the <previous> rule when a context is given) plus, when the dictionary has entries,
-    a delimited list of the speaker's canonical spellings."""
-    base = SYSTEM + CONTEXT_RULE if context else SYSTEM
+PARTIAL_RULE = ("\n- The transcript may stop in the middle of a sentence: the speaker paused and will continue. "
+                "Do not add a final full stop unless the speaker clearly finished the sentence.")
+
+
+def system_prompt(d=None, context=None, partial=False):
+    """SYSTEM (plus the <previous> rule when a context is given, plus the mid-sentence rule for a non-final
+    segment of a chunked dictation) plus, when the dictionary has entries, a delimited list of the speaker's
+    canonical spellings."""
+    base = SYSTEM + (CONTEXT_RULE if context else "") + (PARTIAL_RULE if partial else "")
     lines = d.prompt_entries() if d else []
     if not lines:
         return base
@@ -85,7 +90,7 @@ def _post(url, headers, body, timeout):
         return json.loads(r.read())
 
 
-def call_anthropic(text, timeout=None, dictionary=None, context=None):
+def call_anthropic(text, timeout=None, dictionary=None, context=None, partial=False):
     key = config.get("ANTHROPIC_API_KEY")
     if not key:
         raise RuntimeError("ANTHROPIC_API_KEY not set")
@@ -93,14 +98,14 @@ def call_anthropic(text, timeout=None, dictionary=None, context=None):
         "model": config.get("DICTFLOW_LLM_MODEL", ANTHROPIC_MODEL),
         "max_tokens": max(64, 2 * (len(text) // 3 + 1)),
         "temperature": 0,
-        "system": system_prompt(dictionary, context),
+        "system": system_prompt(dictionary, context, partial),
         "messages": _messages(text, context),
     }
     d = _post(ANTHROPIC_URL, {"x-api-key": key, "anthropic-version": "2023-06-01"}, body, timeout or timeout_for(text))
     return "".join(b.get("text", "") for b in d["content"] if b.get("type") == "text")
 
 
-def call_openai(text, timeout=None, dictionary=None, context=None):
+def call_openai(text, timeout=None, dictionary=None, context=None, partial=False):
     base = config.get("DICTFLOW_LLM_BASE_URL").rstrip("/")
     model = config.get("DICTFLOW_LLM_MODEL")
     if not base or not model:
@@ -112,13 +117,13 @@ def call_openai(text, timeout=None, dictionary=None, context=None):
         "model": model,
         "temperature": 0,
         "max_tokens": max(64, 2 * (len(text) // 3 + 1)),
-        "messages": [{"role": "system", "content": system_prompt(dictionary, context)}] + _messages(text, context),
+        "messages": [{"role": "system", "content": system_prompt(dictionary, context, partial)}] + _messages(text, context),
     }
     d = _post(base + "/chat/completions", headers, body, timeout or timeout_for(text))
     return d["choices"][0]["message"]["content"]
 
 
-def call_sim(text, timeout=None, dictionary=None, context=None):
+def call_sim(text, timeout=None, dictionary=None, context=None, partial=False):
     """TEST ONLY (DICTFLOW_CLEANUP=sim): no network. Sleeps like Haiku measured on the owner's M4 (about
     850 ms + 1.7 ms per output char: 1.0-1.4 s for 100-330 chars) and returns the text unchanged, so latency
     A/B runs cost no API calls."""
@@ -186,19 +191,36 @@ def _preserves_content(raw, out, d=None):
 
 
 def _norm(s):
-    return " ".join(s.lower().split())
+    """Lower case, no accents, only letters/digits, single spaces: 'segunda-feira' and 'Segunda feira' agree."""
+    s = unicodedata.normalize("NFKD", s.lower())
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", s).split())
 
 
 ECHO_SPAN = 20
+ECHO_PRESENT = 0.8   # share of a span that must be found (in order) in raw for the speaker to have said it
+ECHO_BLOCK = 4       # shorter common blocks are coincidence, not repetition
 
 
-def echoes_context(raw, out, context):
+def _present(span, raw):
+    """True when most of `span` appears in `raw`, tolerating small respellings inside it."""
+    blocks = difflib.SequenceMatcher(None, span, raw, autojunk=False).get_matching_blocks()
+    return sum(b.size for b in blocks if b.size >= ECHO_BLOCK) >= ECHO_PRESENT * len(span)
+
+
+def echoes_context(raw, out, context, d=None):
     """True when the output reproduces a span of more than ECHO_SPAN characters of the read-only context
     that the raw transcript itself does not contain (a model that rewrote the previous text instead of
-    cleaning the new one)."""
+    cleaning the new one). Compared after folding accents, hyphens and case, with the dictionary applied to
+    raw, so a repeated phrase that cleanup respelled is still recognised as said."""
+    if d:
+        try:
+            raw = d.apply(raw)
+        except Exception:
+            pass
     c, o, r = _norm(context), _norm(out), _norm(raw)
     for b in difflib.SequenceMatcher(None, c, o, autojunk=False).get_matching_blocks():
-        if b.size > ECHO_SPAN and c[b.a:b.a + b.size] not in r:
+        if b.size > ECHO_SPAN and not _present(c[b.a:b.a + b.size], r):
             return True
     return False
 
@@ -206,7 +228,7 @@ def echoes_context(raw, out, context):
 def _accept(raw, out, d=None, context=None):
     if not out:
         return False
-    if context and echoes_context(raw, out, context):
+    if context and echoes_context(raw, out, context, d):
         return False
     if len(out) > 1.5 * len(raw) + 40:
         return False
@@ -227,10 +249,11 @@ def warm(provider):
         print(f"cleanup: warm-up failed ({type(e).__name__}: {e})", file=sys.stderr)
 
 
-def clean(text, provider=None, call=None, d=None, context=None):
+def clean(text, provider=None, call=None, d=None, context=None, partial=False):
     """Return (text, provider_used, fell_back, ms). `call` overrides the provider function (tests).
     `d` is a Dictionary; default is the user's file, re-read when it changes. `context` is the previous
-    segment's final text of a chunked dictation: read-only prompt context, never part of the output."""
+    segment's final text of a chunked dictation: read-only prompt context, never part of the output.
+    `partial` marks a non-final segment (the speaker may stop mid-sentence)."""
     t0 = time.perf_counter()
     provider = provider or pick_provider()
     d = dictionary.current() if d is None else d
@@ -246,7 +269,8 @@ def clean(text, provider=None, call=None, d=None, context=None):
             if provider not in PROVIDERS:
                 raise RuntimeError(f"unknown provider {provider!r}")
             fn = functools.partial(PROVIDERS[provider], dictionary=d)
-        out = _strip(fn(text, context=context) if context else fn(text))
+        kw = {k: v for k, v in (('context', context), ('partial', partial)) if v}   # plain `fn(text)` when neither is set
+        out = _strip(fn(text, **kw))
     except Exception as e:
         print(f"cleanup: provider={provider} fallback to raw ({type(e).__name__}: {e})", file=sys.stderr)
         return text, provider, True, ms()

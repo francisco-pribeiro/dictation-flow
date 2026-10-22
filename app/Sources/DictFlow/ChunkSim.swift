@@ -5,9 +5,9 @@ import Foundation
 /// assembled text is ready. Paste is not included (the owner measures 10-50 ms). `single` sends the whole WAV
 /// at release, like main.
 enum ChunkSim {
-    struct RunResult { let mode: String; let waitMs: Double; let segments: Int; let tailAudio: Double; let tailRequestMs: Double; let text: String; let failed: Int }
+    struct RunResult { let mode: String; let waitMs: Double; let segments: Int; let tailAudio: Double; let tailRequestMs: Double; let text: String; let failed: Int; var raws: [String] = [] }
 
-    static func ms(_ a: UInt64, _ b: UInt64) -> Double { Double(b &- a) / 1e6 }
+    static func ms(_ a: UInt64, _ b: UInt64) -> Double { b > a && a > 0 ? Double(b - a) / 1e6 : 0 }
 
     static func pcm(of wav: Data) -> Data { wav.subdata(in: 44..<wav.count) }
 
@@ -38,7 +38,7 @@ enum ChunkSim {
         let done = DispatchTime.now().uptimeNanoseconds
         let o = res!.outcome
         return RunResult(mode: "chunked", waitMs: ms(release, done), segments: o.segments, tailAudio: res!.tailAudio,
-                         tailRequestMs: ms(o.lastSentNs, o.lastDoneNs), text: o.text, failed: o.failed.count)
+                         tailRequestMs: ms(o.lastSentNs, o.lastDoneNs), text: o.text, failed: o.failed.count, raws: o.raws)
     }
 
     static func runSingle(wav: Data, worker: WorkerClient, bufferSamples: Int = 1360) -> RunResult {
@@ -46,13 +46,14 @@ enum ChunkSim {
         let t0 = DispatchTime.now().uptimeNanoseconds
         sleep(until: t0 + UInt64(Double(n) / 16000 * 1e9))   // the audio plays out in real time, then release
         let release = DispatchTime.now().uptimeNanoseconds
-        var text = "", failed = 0
+        var text = "", raw = "", failed = 0
         do {
             try worker.ensureRunning()
-            text = try worker.transcribe(wav: wav, cleanup: true).trimmingCharacters(in: .whitespacesAndNewlines)
+            let r = try worker.transcribeMeta(wav: wav, cleanup: true, context: nil)
+            text = r.text.trimmingCharacters(in: .whitespacesAndNewlines); raw = r.raw
         } catch { failed = 1 }
         let done = DispatchTime.now().uptimeNanoseconds
-        return RunResult(mode: "single", waitMs: ms(release, done), segments: 1, tailAudio: Double(n) / 16000, tailRequestMs: ms(release, done), text: text, failed: failed)
+        return RunResult(mode: "single", waitMs: ms(release, done), segments: 1, tailAudio: Double(n) / 16000, tailRequestMs: ms(release, done), text: text, failed: failed, raws: [raw])
     }
 
     static func stats(_ v: [Double]) -> String {
@@ -101,6 +102,8 @@ enum ChunkSim {
             if !warm {
                 results[mode, default: []].append(r)
                 if let outDir { try? r.text.write(toFile: "\(outDir)/\(mode)_\(i).txt", atomically: true, encoding: .utf8) }
+                // one line per segment: the engine output before cleanup, to tell ASR causes from cleanup causes
+                if let outDir, !r.raws.isEmpty { try? r.raws.joined(separator: "\n").write(toFile: "\(outDir)/\(mode)_\(i).raw.txt", atomically: true, encoding: .utf8) }
             }
         }
         for mode in ["single", "chunked"] where results[mode] != nil {

@@ -78,15 +78,20 @@ final class WorkerClient {
 
     /// Blocking. Like `transcribe`, but returns this request's meta and can pass the previous segment's final
     /// text as read-only cleanup context (base64 in a header, never in the URL: the worker logs the path).
-    func transcribeMeta(wav: Data, cleanup: Bool, context: String?) throws -> (text: String, meta: Meta) {
+    func transcribeMeta(wav: Data, cleanup: Bool, context: String?, partial: Bool = false, session: String = "", seq: Int? = nil) throws -> (text: String, raw: String, meta: Meta) {
         var req = URLRequest(url: URL(string: "\(base)/transcribe\(cleanup ? "" : "?cleanup=0")")!)
         req.httpMethod = "POST"
         req.httpBody = wav
         req.timeoutInterval = 15
         req.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
         if let context, cleanup { req.setValue(Data(context.utf8).base64EncodedString(), forHTTPHeaderField: "X-DictFlow-Context") }
+        if partial, cleanup { req.setValue("1", forHTTPHeaderField: "X-DictFlow-Partial") }
+        if !session.isEmpty, let seq {
+            req.setValue(session, forHTTPHeaderField: "X-DictFlow-Session")
+            req.setValue(String(seq), forHTTPHeaderField: "X-DictFlow-Seq")
+        }
         let sem = DispatchSemaphore(value: 0)
-        var result: Result<(text: String, meta: Meta), Error> = .failure(NSError(domain: "DictFlow", code: 7))
+        var result: Result<(text: String, raw: String, meta: Meta), Error> = .failure(NSError(domain: "DictFlow", code: 7))
         URLSession.shared.dataTask(with: req) { data, resp, err in
             defer { sem.signal() }
             if let err { result = .failure(err); return }
@@ -97,7 +102,7 @@ final class WorkerClient {
                 let m = Meta(engine: obj?["engine"] as? String ?? "", provider: obj?["cleanup_provider"] as? String ?? "",
                              fellBack: obj?["fell_back"] as? Bool ?? false, decode: t?["decode"] as? Int ?? 0,
                              asr: t?["asr"] as? Int ?? 0, cleanup: t?["cleanup"] as? Int ?? 0, total: t?["total"] as? Int ?? 0)
-                result = .success((text, m))
+                result = .success((text, obj?["raw"] as? String ?? "", m))
             }
             else {
                 let msg = obj?["error"] as? String ?? "HTTP \(code)"
@@ -115,8 +120,9 @@ final class WorkerClient {
             DispatchQueue.global().async {
                 do {
                     if req.recover { try self.ensureRunning() }
-                    let r = try self.transcribeMeta(wav: req.wav, cleanup: req.cleanup, context: req.context)
-                    done(.success(ChunkAssembler.Reply(text: r.text, meta: r.meta)))
+                    let r = try self.transcribeMeta(wav: req.wav, cleanup: req.cleanup, context: req.context, partial: req.partial,
+                                                    session: req.session, seq: req.seq)
+                    done(.success(ChunkAssembler.Reply(text: r.text, meta: r.meta, raw: r.raw)))
                 } catch let e as NSError {
                     done(.failure((400..<500).contains(e.code) && e.domain == "DictFlow" ? ChunkAssembler.NoRetry() : e))
                 }

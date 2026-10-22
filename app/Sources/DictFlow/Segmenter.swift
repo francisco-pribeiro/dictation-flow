@@ -11,7 +11,7 @@ import Foundation
 struct Segmenter {
     struct Config: Equatable {
         var pauseMs = 450
-        var minSpeechMs = 2500
+        var minSpeechMs = 4000
         var absThreshold = 0.003
         var floorK = 3.0
         var relK = 0.04
@@ -139,6 +139,10 @@ struct Segmenter {
 
     static func selfTest() -> Bool {
         var ok = true
+        let tc = Config(minSpeechMs: 2500)   // the tests use 3 s utterances; the app default is 4 s
+        func cuts(_ pcm: Data, _ b: Int = 1360) -> (cuts: [Double], tailHasSpeech: Bool, segments: [Segment], tail: Tail) {
+            Segmenter.cuts(pcm: pcm, config: tc, bufferSamples: b)
+        }
         func check(_ c: Bool, _ m: String) { if !c { ok = false; FileHandle.standardError.write(Data("FAIL: \(m)\n".utf8)) } }
 
         // Synthetic signal: 220 Hz tone with amplitude 0.2 for speech, low pseudo-noise for silence.
@@ -163,48 +167,48 @@ struct Segmenter {
 
         // 1. No pauses: one segment, bytes equal to the whole recording (what recorder.stop() wraps in a WAV).
         let cont = sig([(0.5, false), (8, true), (0.3, false)])
-        var r = Segmenter.cuts(pcm: cont)
+        var r = cuts(cont)
         check(r.cuts.isEmpty, "no pauses gives no cut, got \(r.cuts)")
         check(r.tail.segment.pcm == cont && r.tail.hasSpeech, "single segment equals full recording")
         check(WavFormat.wav(fromPCM: r.tail.segment.pcm) == WavFormat.wav(fromPCM: cont), "single segment WAV identical")
 
         // 2. 300 ms pause inside speech: no cut. 500 ms: cut, inside the pause, nothing lost.
         let short = sig([(3, true), (0.3, false), (3, true)])
-        r = Segmenter.cuts(pcm: short)
+        r = cuts(short)
         check(r.cuts.isEmpty, "300 ms pause must not cut, got \(r.cuts)")
         let long = sig([(3, true), (0.5, false), (3, true)])
-        r = Segmenter.cuts(pcm: long)
+        r = cuts(long)
         check(r.cuts.count == 1 && r.cuts[0] > 3.0 && r.cuts[0] < 3.5, "500 ms pause cuts inside the pause, got \(r.cuts)")
         check(concat(r) == long, "segments concatenate to the input exactly")
 
         // 3. 700 ms pause then more speech: cut at the middle of the detected pause.
         let mid = sig([(3, true), (0.7, false), (3, true)])
-        r = Segmenter.cuts(pcm: mid)
+        r = cuts(mid)
         check(r.cuts.count == 1 && r.cuts[0] > 3.0 && r.cuts[0] < 3.7, "700 ms cut inside pause, got \(r.cuts)")
         check(concat(r) == mid, "700 ms: concatenation exact")
 
         // 4. Pause at the very end: the cut closes the speech, the leftover silence is not a segment worth sending.
         let endp = sig([(3, true), (0.7, false)])
-        r = Segmenter.cuts(pcm: endp)
+        r = cuts(endp)
         check(r.cuts.count == 1 && !r.tailHasSpeech, "pause at end: one segment, tail has no speech (cuts \(r.cuts), speech \(r.tailHasSpeech))")
         check(concat(r) == endp, "pause at end: concatenation exact")
 
         // 5. Short first sentence (under the minimum speech) is not cut off alone.
         let tiny = sig([(1.5, true), (0.8, false), (3, true)])
-        r = Segmenter.cuts(pcm: tiny)
+        r = cuts(tiny)
         check(r.cuts.isEmpty, "1.5 s of speech is below the minimum, got \(r.cuts)")
 
         // 6. Silence only: no cut, tail has no speech, bytes kept (so main's path sees the same audio).
         let quiet = sig([(2, false)])
-        r = Segmenter.cuts(pcm: quiet)
+        r = cuts(quiet)
         check(r.cuts.isEmpty && !r.tailHasSpeech && r.tail.segment.pcm == quiet, "silence only")
 
         // 7. Many pauses, odd buffer sizes: always an exact partition, same cuts for any buffer size.
         let many = sig([(0.3, false), (3, true), (0.6, false), (3, true), (0.9, false), (3, true), (0.2, false), (3, true), (1.0, false)])
-        let ref = Segmenter.cuts(pcm: many)
+        let ref = cuts(many)
         check(ref.cuts.count == 3, "three long pauses give three cuts, got \(ref.cuts)")
         for b in [1, 7, 480, 1000, 4096, 16000] {
-            let x = Segmenter.cuts(pcm: many, bufferSamples: b)
+            let x = cuts(many, b)
             check(x.cuts == ref.cuts, "buffer size \(b) changes the cuts: \(x.cuts) vs \(ref.cuts)")
             check(concat(x) == many, "buffer size \(b) loses or duplicates samples")
         }
@@ -213,8 +217,13 @@ struct Segmenter {
         var clickSig = sig([(3, true), (0.2, false)])
         clickSig.append(sig([(0.04, true)]))
         clickSig.append(sig([(0.6, false), (3, true)]))
-        r = Segmenter.cuts(pcm: clickSig)
+        r = cuts(clickSig)
         check(r.cuts.count == 1, "click in pause: still one cut, got \(r.cuts)")
+
+        // 8b. App default (4 s): a 3 s first utterance is not cut off alone, it is merged into the next segment.
+        check(Config().minSpeechMs == 4000, "default minimum speech is 4 s")
+        r = Segmenter.cuts(pcm: sig([(3, true), (0.7, false), (3, true), (0.7, false), (1, true)]))
+        check(r.cuts.count == 1 && r.cuts[0] > 6.5, "3 s utterance merged into the next: cuts \(r.cuts)")
 
         // 9. Env parsing clamps the pause.
         check(Config.from(env: ["DICTFLOW_CHUNK_PAUSE_MS": "100"]).pauseMs == 350, "pause clamped low")

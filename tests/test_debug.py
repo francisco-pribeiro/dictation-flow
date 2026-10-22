@@ -130,3 +130,31 @@ def test_endpoint_capture_on_and_off(monkeypatch, tmp_path):
     _post(monkeypatch, off, False)
     time.sleep(0.2)
     assert not debug.debug_dir().exists()
+
+
+def test_chunked_capture_records_context_and_prunes_by_dictation(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    res = {"raw": "a", "text": "b", "engine": "parakeet", "cleanup_provider": "x", "fell_back": False, "timings_ms": {"total": 1}}
+    for n in range(debug.KEEP + 3):          # KEEP+3 dictations of 6 pieces each
+        sid = f"{n:08x}"
+        for seq in range(6):
+            chunk = {"session": sid, "seq": seq, "chunked": True, "ctx": seq > 0, "partial": seq < 5,
+                     "context": "antes" if seq else None}
+            debug.capture(b"RIFF", "auto", res, "a", chunk)
+    d = debug.debug_dir()
+    assert len(list(d.glob("*.wav"))) == debug.KEEP * 6          # 30 dictations kept, not 5
+    j = sorted(d.glob("*-s*-3.json"))[-1]
+    info = json.loads(j.read_text())
+    assert info["seq"] == 3 and info["ctx"] is True and info["context"] == "antes" and info["partial"] is True
+
+
+def test_replay_reuses_stored_context(tmp_path):
+    wav = tmp_path / "a.wav"
+    shutil.copy(FIX / "pt_facto.wav", wav)
+    wav.with_suffix(".json").write_text(json.dumps({"raw_engine": "x", "text": "y", "context": "frase anterior", "partial": True,
+                                                    "session": "abcd1234", "seq": 1, "ctx": True}))
+    seen = []
+    out = io.StringIO()
+    debug.run_replay([str(wav)], None, ["parakeet"], True, False, make_engine=lambda n: (FakeEngine("Bom dia"), "auto"),
+                     clean=lambda t, d, **kw: seen.append(kw) or (t, "fake", False, 1), out=out)
+    assert seen == [{"context": "frase anterior", "partial": True}]
