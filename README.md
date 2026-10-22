@@ -142,6 +142,7 @@ Every variable is optional. With none set, the app uses local Parakeet, no clean
 | `GROQ_API_KEY` | empty | Required only for `DICTFLOW_ENGINE=groq` |
 | `DICTFLOW_PORT` | `8765` | Worker port on `127.0.0.1`. If you change it, also launch the app with `open --env DICTFLOW_PORT=...`, otherwise the app polls 8765 |
 | `DICTFLOW_HOTKEY` | `rightoption` | App only, not read from `.env`: any `hotkey` name listed under settings.json (e.g. `rightcmd`, `rightctrl`, `fn`). Default only: a choice saved in `settings.json` (menu Atalho) wins. Set it with `open --env` (see Run) |
+| `DICTFLOW_CLEANUP_MODE` | `rewrite` | `rewrite` (Haiku returns the whole cleaned text) or `edits` (experimental: Haiku returns only `[find, replace]` pairs, applied and validated in code; any invalid edit falls back to the raw text). Measured not faster, see Cleanup benchmark |
 | `DICTFLOW_DEBUG_CAPTURE` | off | `1` stores each dictation's audio and text locally for debugging (see Debug capture and replay) |
 | `DICTFLOW_SIGN_IDENTITY` | ad hoc | `build.sh` only: signing identity name (see Signing) |
 
@@ -360,3 +361,15 @@ These steps need a GUI and your hands; no automated test covers them. Do them on
 - Pasting is the insertion method, so it briefly uses the clipboard (restored after about 1 s) and fails in apps that block Cmd-V.
 - Permissions must be granted again whenever the signing identity changes (including ad-hoc rebuilds).
 - Recording is capped at 120 s per hold.
+
+## Cleanup benchmark (edits vs rewrite)
+
+`scripts/bench_cleanup.py` compares `DICTFLOW_CLEANUP_MODE=edits` with `rewrite` on 16 synthetic transcripts (`scripts/bench_cleanup_corpus.json`, regenerate with `scripts/make_corpus.py`), plus a sweep of dictionary size, prompt length and `max_tokens`. Results are cached in `$BENCH_DIR` and counted in a ledger that aborts at 90 real Haiku calls; `--fake` is a zero-cost dry run.
+
+```bash
+uv run python scripts/bench_cleanup.py main     # median of 3 runs on texts over 150 chars, 1 run on the rest
+uv run python scripts/bench_cleanup.py sweep
+uv run python scripts/bench_cleanup.py report   # tables + JSON from the cache, 0 calls
+```
+
+Result on the M4 (2026-10-22): edits was 2.9% faster on texts over 150 chars (836 ms vs 861 ms median of per-text medians, n=9), with 9 of 27 long-text runs falling back to raw. Haiku latency is about 457 ms fixed plus about 6.7 ms per output token; input size barely matters (about 9 ms per 100 input tokens). Edits cut output tokens only from 55 to 36 on average, because each JSON pair costs 8-15 tokens.
