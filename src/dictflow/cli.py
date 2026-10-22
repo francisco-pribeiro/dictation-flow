@@ -69,7 +69,8 @@ def main(argv=None):
     c = sub.add_parser("clean", help="run LLM cleanup on text")
     c.add_argument("text")
     c.add_argument("--provider", choices=["anthropic", "openai", "none"])
-    sub.add_parser("serve", help="run the localhost worker")
+    s = sub.add_parser("serve", help="run the localhost worker")
+    s.add_argument("--port", type=int)
     sub.add_parser("bench", help="benchmark engines on fixtures")
     args = p.parse_args(argv)
     if not args.cmd:
@@ -83,6 +84,14 @@ def main(argv=None):
             return 1
     if args.cmd == "clean":
         return cmd_clean(args)
+    if args.cmd == "serve":
+        from . import server
+
+        try:
+            return server.serve(args.port)
+        except (RuntimeError, ValueError, OSError) as e:
+            print(f"dictflow: error: {e}", file=sys.stderr)
+            return 1
     print(f"{args.cmd}: not implemented yet")
     return 1
 
