@@ -76,7 +76,8 @@ class Worker:
         if do_cleanup and raw:
             text, prov, fell_back, timings["cleanup"] = cleanup.clean(raw, self.provider, d=d)
         timings["total"] = _ms(t_all)
-        return {"raw": raw, "text": text, "cleanup_provider": prov, "fell_back": fell_back, "timings_ms": timings}
+        return {"raw": raw, "text": text, "cleanup_provider": prov, "fell_back": fell_back, "timings_ms": timings,
+                "engine": self.engine.name}
 
 
 def make_handler(worker, port):

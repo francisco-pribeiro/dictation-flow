@@ -256,6 +256,8 @@ curl -s -X POST -H 'Content-Type: audio/wav' --data-binary @tests/fixtures/pt_fa
 
 The response is JSON: `raw`, `text`, `cleanup_provider`, `fell_back`, `timings_ms`.
 
+Timing log: each dictation appends one line to `~/Library/Logs/DictFlow/timings.log` (mode 0600, capped at about 1 MB) with timestamp, audio seconds, character count, engine, cleanup provider, fallback flag and the worker and app-side millisecond timings. It contains no transcript text and no app or window names; it is written on a background queue after the paste, so it does not add latency.
+
 Tests: `uv run pytest`.
 
 Headless self-tests of the app binary (after `./build.sh`):
@@ -267,6 +269,7 @@ build/DictFlow.app/Contents/MacOS/DictFlow --clipboard-test                     
 build/DictFlow.app/Contents/MacOS/DictFlow --settings-test                                      # settings.json load/save, corrupt file, precedence, hotkey capture logic; prints PASS
 build/DictFlow.app/Contents/MacOS/DictFlow --hotkey-test                                        # hold/tap/double-tap/triple-tap/busy/Esc state machine; prints PASS
 build/DictFlow.app/Contents/MacOS/DictFlow --shortcut-test                                      # paste shortcut parsing, matching, capture; prints PASS
+build/DictFlow.app/Contents/MacOS/DictFlow --timinglog-test                                    # timing log format, 0600 mode, size cap, enqueue cost; prints PASS
 ```
 
 `--pipeline-test` reuses any healthy worker already on the port: with DictFlow.app (or `dictflow serve`) running, it tests that worker, with that checkout's `.env`, not the one you just built. To test the fresh build's own worker, quit the app first or use another port: `DICTFLOW_PORT=8799 build/DictFlow.app/Contents/MacOS/DictFlow --pipeline-test tests/fixtures/pt_facto.wav`.

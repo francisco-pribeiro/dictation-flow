@@ -63,6 +63,12 @@ final class WorkerClient {
         throw NSError(domain: "DictFlow", code: 6, userInfo: [NSLocalizedDescriptionKey: "worker not healthy after 60 s"])
     }
 
+    /// Numbers and flags from the response, kept for the timing log (never the text).
+    struct Meta { var engine = ""; var provider = ""; var fellBack = false; var decode = 0, asr = 0, cleanup = 0, total = 0 }
+    private let metaLock = NSLock()
+    private var _lastMeta = Meta()
+    var lastMeta: Meta { metaLock.lock(); defer { metaLock.unlock() }; return _lastMeta }
+
     /// Blocking. POST WAV bytes, return the text field.
     func transcribe(wav: Data, cleanup: Bool = true) throws -> String {
         var req = URLRequest(url: URL(string: "\(base)/transcribe\(cleanup ? "" : "?cleanup=0")")!)
@@ -77,7 +83,14 @@ final class WorkerClient {
             if let err { result = .failure(err); return }
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             let obj = (try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: Any]
-            if code == 200, let text = obj?["text"] as? String { result = .success(text) }
+            if code == 200, let text = obj?["text"] as? String {
+                let t = obj?["timings_ms"] as? [String: Any]
+                let m = Meta(engine: obj?["engine"] as? String ?? "", provider: obj?["cleanup_provider"] as? String ?? "",
+                             fellBack: obj?["fell_back"] as? Bool ?? false, decode: t?["decode"] as? Int ?? 0,
+                             asr: t?["asr"] as? Int ?? 0, cleanup: t?["cleanup"] as? Int ?? 0, total: t?["total"] as? Int ?? 0)
+                self.metaLock.lock(); self._lastMeta = m; self.metaLock.unlock()
+                result = .success(text)
+            }
             else {
                 let msg = obj?["error"] as? String ?? "HTTP \(code)"
                 result = .failure(NSError(domain: "DictFlow", code: code, userInfo: [NSLocalizedDescriptionKey: msg]))

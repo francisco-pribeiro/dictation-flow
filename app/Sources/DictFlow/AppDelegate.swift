@@ -325,6 +325,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let tSend = DispatchTime.now().uptimeNanoseconds
                 let text = try worker.transcribe(wav: wav, cleanup: !secure).trimmingCharacters(in: .whitespacesAndNewlines)
                 let tResp = DispatchTime.now().uptimeNanoseconds
+                let meta = worker.lastMeta
                 DispatchQueue.main.async { [self] in
                     state = .idle
                     guard !text.isEmpty else { NSSound.beep(); return }   // no speech detected
@@ -335,6 +336,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     let ms = { (a: UInt64, b: UInt64) in (b - a) / 1_000_000 }
                     let audio = Double(max(wav.count - 44, 0)) / 32000   // 16 kHz mono Int16
                     log("timing release->send=\(ms(tRelease, tSend))ms request=\(ms(tSend, tResp))ms paste=\(ms(tResp, tPaste))ms total=\(ms(tRelease, tPaste))ms audio=\(String(format: "%.1f", audio))s")
+                    // After paste and state == .idle; formatting is a few microseconds, I/O runs on a utility queue.
+                    TimingLog.record(audio: audio, chars: text.count, meta: meta,
+                                     sendMs: ms(tRelease, tSend), requestMs: ms(tSend, tResp), pasteMs: ms(tResp, tPaste), totalMs: ms(tRelease, tPaste))
                 }
             } catch {
                 log("transcribe failed: \(error.localizedDescription)")
