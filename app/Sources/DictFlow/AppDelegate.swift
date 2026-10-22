@@ -24,7 +24,7 @@ enum Permissions {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private enum State { case idle, recording, working }
 
     private let worker: WorkerClient
@@ -42,6 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let transcriptItem = NSMenuItem(title: "No transcript yet", action: #selector(copyTranscript), keyEquivalent: "")
     private let warningItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let dictItem = NSMenuItem(title: "Dicionario", action: nil, keyEquivalent: "")
+    private let dictMenu = NSMenu()
+    private let dictCountItem = NSMenuItem(title: "Dicionario: ...", action: nil, keyEquivalent: "")
     private var lastTranscript = ""
     private var state = State.idle { didSet { if state != .recording { latched = false }; refreshTitle() } }
     private var tapOK = false
@@ -66,6 +69,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         hotkeyItem.submenu = hotkeyMenu
         menu.addItem(hotkeyItem)
+        dictCountItem.isEnabled = false
+        dictMenu.addItem(dictCountItem)
+        for (title, sel) in [("Adicionar ao dicionario...", #selector(addDictionaryEntry)), ("Abrir dicionario", #selector(openDictionary))] {
+            let mi = NSMenuItem(title: title, action: sel, keyEquivalent: "")
+            mi.target = self
+            dictMenu.addItem(mi)
+        }
+        dictItem.submenu = dictMenu
+        menu.addItem(dictItem)
+        menu.delegate = self
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         item.menu = menu
@@ -296,6 +309,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } catch {
                 log("transcribe failed: \(error.localizedDescription)")
                 DispatchQueue.main.async { [self] in state = .idle; NSSound.beep() }
+            }
+        }
+    }
+
+    // MARK: dictionary
+
+    /// Refreshes the entry count each time the menu opens (the file may have been edited by hand).
+    func menuWillOpen(_ menu: NSMenu) { refreshDictionaryCount() }
+
+    private func refreshDictionaryCount() {
+        DispatchQueue.global().async { [worker] in
+            let info = try? worker.dictionary()
+            DispatchQueue.main.async { [self] in setDictionaryCount(info?.count) }
+        }
+    }
+
+    private func setDictionaryCount(_ n: Int?) {
+        let t = n.map { "\($0) \($0 == 1 ? "entrada" : "entradas")" }
+        dictItem.title = t.map { "Dicionario: \($0)" } ?? "Dicionario"
+        dictCountItem.title = t ?? "Worker indisponivel"
+    }
+
+    @objc private func addDictionaryEntry() {
+        let alert = NSAlert()
+        alert.messageText = "Adicionar ao dicionario"
+        alert.informativeText = "Um termo (Supabase) ou uma correcao (super base -> Supabase)."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Adicionar")
+        alert.addButton(withTitle: "Cancelar")
+        alert.window.initialFirstResponder = field
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let entry = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !entry.isEmpty else { return }
+        DispatchQueue.global().async { [self] in
+            do {
+                try worker.ensureRunning()
+                let info = try worker.dictionary("add", entry: entry)
+                log("dictionary: \(info.status), \(info.count) entries")
+                DispatchQueue.main.async { [self] in
+                    setDictionaryCount(info.count)
+                    if info.status == "exists" { NSSound.beep() }   // already there: nothing changed
+                }
+            } catch {
+                log("dictionary add failed: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    let a = NSAlert()
+                    a.messageText = "Nao foi possivel adicionar"
+                    a.informativeText = error.localizedDescription
+                    NSApp.activate(ignoringOtherApps: true)
+                    a.runModal()
+                }
+            }
+        }
+    }
+
+    @objc private func openDictionary() {
+        DispatchQueue.global().async { [self] in
+            do {
+                try worker.ensureRunning()
+                let info = try worker.dictionary("ensure")
+                DispatchQueue.main.async { [self] in
+                    setDictionaryCount(info.count)
+                    NSWorkspace.shared.open(URL(fileURLWithPath: info.path))
+                }
+            } catch {
+                log("dictionary open failed: \(error.localizedDescription)")
+                DispatchQueue.main.async { NSSound.beep() }
             }
         }
     }

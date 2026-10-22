@@ -5,8 +5,11 @@ File format, one entry per line, '#' starts a comment:
     super base -> Supabase        replacement; 'a | b -> Right' maps several wrongs
 Local only. A missing or malformed file never raises: bad lines are skipped.
 """
+import contextlib
+import fcntl
 import os
 import re
+import tempfile
 import unicodedata
 from pathlib import Path
 
@@ -152,12 +155,57 @@ def _read_lines():
         return []
 
 
-def _write_lines(lines):
+HEADER = """# DictFlow dictionary: one entry per line, '#' starts a comment.
+#   Term                      canonical spelling (vocabulary hint)
+#   wrong -> Right            replaced after transcription
+#   a | b -> Right            several wrong forms for one Right
+# Example (delete the leading '#' to use):
+# Supabase
+# super base | superbase -> Supabase
+# order to party -> Order2Party
+"""
+
+
+@contextlib.contextmanager
+def _locked():
+    """Serialises read-modify-write between the worker threads and the CLI (sidecar lock file)."""
     p = path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    os.replace(tmp, p)
+    with open(p.with_name(p.name + ".lock"), "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        yield
+
+
+def _atomic_write(text, exclusive=False):
+    """Write to a temp file in the same directory, then rename: a concurrent reader sees the old or the new file, never a partial one."""
+    p = path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=p.name + ".", suffix=".tmp", dir=p.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        if exclusive:
+            os.link(tmp, p)  # fails if the file appeared meanwhile; never clobbers
+        else:
+            os.replace(tmp, p)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+
+
+def _write_lines(lines):
+    _atomic_write("\n".join(lines) + "\n")
+
+
+def ensure_file():
+    """Create the dictionary with a commented example header if missing. Returns its path."""
+    with _locked():
+        if not path().exists():
+            with contextlib.suppress(FileExistsError):
+                _atomic_write(HEADER, exclusive=True)
+    return path()
 
 
 def add(text):
@@ -165,6 +213,11 @@ def add(text):
     e = parse_line(text)
     if not e:
         raise ValueError("expected 'Term' or 'wrong -> Right'")
+    with _locked():
+        return _add(e)
+
+
+def _add(e):
     lines = _read_lines()
     if e[0] == "term":
         canon = e[1]
@@ -196,7 +249,11 @@ def add(text):
 
 def remove(text):
     """Remove by whole line, term, Right form (drops the line) or a wrong form (drops just that wrong). Returns lines changed."""
-    k = _key(text)
+    with _locked():
+        return _remove(_key(text))
+
+
+def _remove(k):
     out, n = [], 0
     for l in _read_lines():
         pe = parse_line(l)

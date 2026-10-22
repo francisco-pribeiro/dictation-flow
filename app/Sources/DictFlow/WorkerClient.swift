@@ -87,6 +87,34 @@ final class WorkerClient {
         return try result.get()
     }
 
+    struct DictionaryInfo { let status: String; let path: String; let count: Int }
+
+    /// Blocking. nil body = GET /dictionary; otherwise POST (add/ensure) with a JSON body. The worker owns the file logic.
+    func dictionary(_ op: String? = nil, entry: String? = nil) throws -> DictionaryInfo {
+        var req = URLRequest(url: URL(string: "\(base)/dictionary\(op.map { "/" + $0 } ?? "")")!)
+        req.timeoutInterval = 5
+        if let op {
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try JSONSerialization.data(withJSONObject: op == "add" ? ["entry": entry ?? ""] : [:])
+        }
+        let sem = DispatchSemaphore(value: 0)
+        var result: Result<DictionaryInfo, Error> = .failure(NSError(domain: "DictFlow", code: 7))
+        URLSession.shared.dataTask(with: req) { data, resp, err in
+            defer { sem.signal() }
+            if let err { result = .failure(err); return }
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            let obj = (try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: Any]
+            if code == 200, let path = obj?["path"] as? String {
+                result = .success(DictionaryInfo(status: obj?["status"] as? String ?? "", path: path, count: obj?["count"] as? Int ?? 0))
+            } else {
+                result = .failure(NSError(domain: "DictFlow", code: code, userInfo: [NSLocalizedDescriptionKey: obj?["error"] as? String ?? "HTTP \(code)"]))
+            }
+        }.resume()
+        sem.wait()
+        return try result.get()
+    }
+
     /// Terminate the child we spawned (a reused worker is left alone).
     func shutdown() {
         childLock.lock()

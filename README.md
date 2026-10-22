@@ -28,6 +28,28 @@ Measured on the MacBook Air M4 (2026-10-22, synthetic TTS fixtures of 2-5 s, mod
 
 Running cost: 0 with cleanup off or Ollama; cents per month with Haiku or the Groq free tier.
 
+## Features and shortcuts
+
+| What | How |
+|---|---|
+| Dictate (hold) | Hold the hotkey (default right Option), speak, release |
+| Hands-free | Tap the hotkey twice quickly: recording latches (`◉`); one press stops and pastes, Esc cancels |
+| Change the hotkey | Menu **Atalho** (presets or **Gravar novo atalho...**); applies at once |
+| Paste last transcript | **Cmd+Ctrl+Z** (configurable under **Atalho**), or menu **Colar ultima transcricao** |
+| Copy last transcript | Menu **Copiar ultima transcricao** (or click the "Last:" line) |
+| Personal dictionary | Menu **Dicionario** (entry count, **Adicionar ao dicionario...**, **Abrir dicionario**), or `dictflow dict` |
+| Optional cleanup | Haiku (or Groq/Ollama) removes fillers, resolves self-corrections, fixes PT-BR spellings; see Configuration |
+
+### settings.json
+
+`~/Library/Application Support/DictFlow/settings.json`, written by the menu (never edit it while the app runs). Both keys are optional:
+
+```json
+{ "hotkey": "rightctrl", "pasteShortcut": "ctrl+cmd+z" }
+```
+
+`hotkey` is one of `rightoption`, `rightcmd`, `rightctrl`, `fn`, `leftoption`, `leftcmd`, `leftctrl`, `leftshift`, `rightshift`. `pasteShortcut` is modifiers plus one letter or digit (`ctrl`, `cmd`, `opt`, `shift`). Unknown or corrupt values fall back to the defaults. The saved hotkey wins over `DICTFLOW_HOTKEY`.
+
 ## Requirements
 
 - macOS 14+ on Apple Silicon (tested on macOS 15.7.4)
@@ -78,6 +100,8 @@ build/DictFlow.app/Contents/MacOS/DictFlow --pipeline-test tests/fixtures/pt_fac
 ```bash
 open build/DictFlow.app
 ```
+
+**Rebuilding resets permissions unless you sign with the `DictFlow Local` certificate** (see Signing): with the default ad-hoc signature macOS treats each build as a new app and asks for Microphone, Accessibility and Input Monitoring again.
 
 Then do the manual checklist below once. To see the app's log while testing:
 
@@ -158,6 +182,25 @@ Supabase                         # canonical spelling
 super base | superbase -> Supabase   # replacement; several wrongs may map to one Right
 order to party -> Order2Party
 ```
+
+Examples in the style you will actually use:
+
+```
+# vocabulary (hint for the cleanup pass and for whisper/groq)
+Vektrum
+Supabase
+n8n
+MiauCare
+
+# corrections applied after every transcription
+vector um | vetrum | vek trum -> Vektrum
+order to party | order two party | ordem tu party -> Order2Party
+super base | superbase -> Supabase
+n oito n | n 8 n | en eight en -> n8n
+miau care | meow care -> MiauCare
+```
+
+**From the menu:** **Dicionario** shows the number of entries (refreshed each time the menu opens). **Adicionar ao dicionario...** opens a small dialog: type `Term` or `wrong -> Right` (several wrongs with `|`) and press Adicionar; a duplicate just beeps. **Abrir dicionario** opens the file in the default editor and first creates it with a commented example header if it does not exist. The app sends the entry to the local worker (`POST /dictionary/add`, `/dictionary/ensure`, `GET /dictionary`, all on 127.0.0.1 with the same host/origin checks as `/transcribe`), which uses exactly the same code and dedupe as the CLI, so the menu needs the worker to be running (it starts it if needed). Writes go to a temp file in the same folder and are renamed over the dictionary under a lock file (`dictionary.txt.lock`), so a transcription reading at that moment sees the old or the new file, never a partial one, and the CLI and the menu cannot overwrite each other. Comments and the header are kept.
 
 Manage it with `uv run dictflow dict add "wrong -> Right"` (or `add "Term"`), `dict list`, `dict remove <text>` (a whole line, a term, a Right form, or one wrong form) and `dict path`. Adding dedupes (case-insensitive); a new Right for an existing wrong replaces it. You can also edit the file by hand; the worker re-reads it when its mtime changes, so no restart is needed. A missing or malformed file never breaks dictation: bad lines are skipped.
 
@@ -269,6 +312,11 @@ These steps need a GUI and your hands; no automated test covers them. Do them on
 15. **Hands-free.** Tap the key twice quickly in a text field. Success: after the second tap the icon is `◉` and you hear a tick; speak with the key released, press once: the text is pasted and the icon returns to `◦`. Repeat and press Esc while `◉`: nothing is pasted, the microphone indicator goes off. A single tap still produces nothing; a slow second tap (over 400 ms later) does not latch; typing in another app while `◉` does not cancel it.
 16. **Paste last transcript.** After a dictation, click elsewhere and press Cmd+Ctrl+Z: the last text is pasted again and the app does not react to the keystroke (no undo). Menu Colar ultima transcricao pastes it; Copiar ultima transcricao puts it on the clipboard. After a fresh launch, the shortcut only beeps. Atalho > Colar ultima transcricao: pick Ctrl+Opt+V, it works and `settings.json` has `"pasteShortcut": "ctrl+opt+v"`; Gravar novo atalho de colar..., press Cmd+Opt+L, it applies and persists; Esc cancels. Cmd+Z alone still undoes.
 17. **Wispr Flow.** Do not run Wispr Flow on the same hotkey at the same time. If you switch DictFlow to `fn`, set System Settings > Keyboard > Press Globe key to: Do Nothing.
+18. **Shortcut capture.** Atalho > Gravar novo atalho...: the item reads "A gravar..."; press right Shift: it becomes the checked hotkey and works. Atalho > Gravar novo atalho de colar..., press Ctrl+Opt+P: it is applied and `settings.json` has `"pasteShortcut": "ctrl+opt+p"`. Start either capture and press Esc: nothing changes. Starting one capture while the other is active cancels the first.
+19. **Esc cancel.** Hold the hotkey, speak, press Esc before releasing: nothing is pasted and the microphone indicator goes off. Repeat in hands-free (`◉`): Esc cancels the same way.
+20. **Paste last in three apps.** Dictate a sentence in TextEdit. Click into Chrome (a text field), press Cmd+Ctrl+Z: the sentence is pasted. Repeat in Slack (or another Electron app) and in Terminal (typed at the prompt, no Enter). The clipboard is restored afterwards.
+21. **Dictionary entry then dictate.** Menu Dicionario > Adicionar ao dicionario..., enter `vector um -> Vektrum`, press Adicionar: the count in the submenu title goes up by one. Entering it again beeps and the count does not change; entering `a -> b -> c` shows an error dialog. Dictate "o vector um é uma agência": the pasted text has "Vektrum". Edit `dictionary.txt` by hand (add a line), reopen the menu: the count follows, with no restart.
+22. **Abrir dicionario.** Move the dictionary file away (`mv ~/Library/Application\ Support/DictFlow/dictionary.txt ~/Desktop/`), click Dicionario > Abrir dicionario: the default editor opens a new file that starts with the commented example header. Move your file back afterwards.
 
 ## Known limitations
 

@@ -86,6 +86,8 @@ def make_handler(worker, port):
                 code, obj = 403, {"error": "forbidden"}
             elif urlparse(self.path).path == "/health":
                 code, obj = 200, {"status": "ok", "engine": worker.engine.name, "cleanup_provider": worker.provider}
+            elif urlparse(self.path).path == "/dictionary":
+                code, obj = 200, {"path": str(dictionary.path()), "count": len(dictionary.entries())}
             else:
                 code, obj = 404, {"error": "not found"}
             try:
@@ -96,12 +98,42 @@ def make_handler(worker, port):
 
         def do_POST(self):
             t0 = time.perf_counter()
-            code, obj = self._transcribe()
+            code, obj = self._dictionary() if urlparse(self.path).path.startswith("/dictionary/") else self._transcribe()
             try:
                 self._send(code, obj)
             except OSError:
                 pass
             self._log(code, t0)
+
+        def _dictionary(self):
+            """POST /dictionary/add {"entry": "..."} and POST /dictionary/ensure: same file logic as the CLI."""
+            if self._forbidden() or self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
+                self.close_connection = True
+                return 403, {"error": "forbidden"}
+            try:
+                n = int(self.headers.get("Content-Length", ""))
+                body = json.loads(self.rfile.read(n) or b"{}") if 0 <= n <= 4096 else None
+            except ValueError:
+                body = None
+            if not isinstance(body, dict):
+                return 400, {"error": "bad request"}
+            op = urlparse(self.path).path
+            try:
+                if op == "/dictionary/add":
+                    entry = body.get("entry")
+                    if not isinstance(entry, str):
+                        return 400, {"error": "entry must be a string"}
+                    status = dictionary.add(entry)
+                elif op == "/dictionary/ensure":
+                    dictionary.ensure_file()
+                    status = "ok"
+                else:
+                    return 404, {"error": "not found"}
+            except ValueError as e:
+                return 400, {"error": str(e)}
+            except OSError as e:
+                return 500, {"error": f"{type(e).__name__}: {e}"}
+            return 200, {"status": status, "path": str(dictionary.path()), "count": len(dictionary.entries())}
 
         def _transcribe(self):
             if self._forbidden() or self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "audio/wav":
