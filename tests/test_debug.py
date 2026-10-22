@@ -21,6 +21,12 @@ FIX = Path(__file__).parent / "fixtures"
     ("Isto é uma ideia crazy mas pode funcionar", "pt"),
     ("Preciso de ajustar o workflow da equipa para amanhã", "pt"),
     ("I said não e depois the other one", "mixed"),
+    ("Não consigo registar-me como catsitter", "pt"),
+    ("Dá-me feedback a sério.", "pt"),
+    ("Só falta acertar o preço do projeto.", "pt"),
+    ("Diz-me o que achas do pipeline.", "pt"),
+    ("Feedback do cliente chegou esta manhã.", "pt"),
+    ("Vou marcar a meeting", "pt"),
     ("", "unknown"),
     ("xyzzy", "unknown"),
 ])
@@ -130,3 +136,45 @@ def test_endpoint_capture_on_and_off(monkeypatch, tmp_path):
     _post(monkeypatch, off, False)
     time.sleep(0.2)
     assert not debug.debug_dir().exists()
+
+
+class FakeWhisper:
+    def __init__(self, p):
+        self.p, self.calls = p, []
+
+    def lang_prob(self, samples, code="pt"):
+        return self.p
+
+    def transcribe(self, samples, sr, lang="auto", prompt=""):
+        self.calls.append(lang)
+        return "Foi crazy workflow ontem", "pt"
+
+
+def _guard_worker(text, p, monkeypatch, flag="1", engine="parakeet"):
+    monkeypatch.setenv("DICTFLOW_LANG_GUARD", flag)
+    w = server.Worker.__new__(server.Worker)
+    w.engine = FakeEngine(text)
+    w.engine.name = engine
+    w.lock = __import__("threading").Lock()
+    w.provider = "none"
+    w.guard_whisper = FakeWhisper(p)
+    return w
+
+
+def test_lang_guard_retranscribes_en_looking_parakeet_when_audio_is_pt(monkeypatch):
+    w = _guard_worker("Foo crazy workflow on thy.", 0.9, monkeypatch)
+    res = w.process((FIX / "pt_facto.wav").read_bytes(), False, "")
+    assert res["raw"] == "Foi crazy workflow ontem" and w.guard_whisper.calls == ["pt"] and "guard" in res["timings_ms"]
+
+
+def test_lang_guard_keeps_real_english_and_skips_pt_output(monkeypatch):
+    w = _guard_worker("Foo crazy workflow on thy.", 0.1, monkeypatch)
+    assert w.process((FIX / "pt_facto.wav").read_bytes(), False, "")["raw"] == "Foo crazy workflow on thy."
+    w = _guard_worker("Isto está crazy de verdade", 0.9, monkeypatch)
+    assert w.process((FIX / "pt_facto.wav").read_bytes(), False, "")["raw"] == "Isto está crazy de verdade"
+    assert w.guard_whisper.calls == []
+
+
+def test_lang_guard_off_by_default(monkeypatch):
+    w = _guard_worker("Foo crazy workflow on thy.", 0.9, monkeypatch, flag="")
+    assert w.process((FIX / "pt_facto.wav").read_bytes(), False, "")["raw"] == "Foo crazy workflow on thy."

@@ -142,6 +142,7 @@ Every variable is optional. With none set, the app uses local Parakeet, no clean
 | `GROQ_API_KEY` | empty | Required only for `DICTFLOW_ENGINE=groq` |
 | `DICTFLOW_PORT` | `8765` | Worker port on `127.0.0.1`. If you change it, also launch the app with `open --env DICTFLOW_PORT=...`, otherwise the app polls 8765 |
 | `DICTFLOW_HOTKEY` | `rightoption` | App only, not read from `.env`: any `hotkey` name listed under settings.json (e.g. `rightcmd`, `rightctrl`, `fn`). Default only: a choice saved in `settings.json` (menu Atalho) wins. Set it with `open --env` (see Run) |
+| `DICTFLOW_LANG_GUARD` | off | `1` (Parakeet only): when the Parakeet text looks English, Whisper checks the audio language and, if p(pt) > 0.5, re-transcribes with `language=pt`. Portuguese-looking output pays 0 ms; English-looking output pays about 0.9 s (about 1.9 s when it re-transcribes) |
 | `DICTFLOW_DEBUG_CAPTURE` | off | `1` stores each dictation's audio and text locally for debugging (see Debug capture and replay) |
 | `DICTFLOW_SIGN_IDENTITY` | ad hoc | `build.sh` only: signing identity name (see Signing) |
 

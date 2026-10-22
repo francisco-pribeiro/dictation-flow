@@ -58,6 +58,17 @@ class WhisperEngine:
         res = self.mod.transcribe(samples.astype(np.float32), **kw)
         return res["text"].strip(), res.get("language")
 
+    def lang_prob(self, samples, code="pt"):
+        """Whisper language-ID probability of `code` for the first 30 s (one encoder pass, no decoding)."""
+        import mlx.core as mx
+        from mlx_whisper.audio import N_FRAMES, N_SAMPLES, log_mel_spectrogram, pad_or_trim
+        from mlx_whisper.transcribe import ModelHolder
+        model = ModelHolder.get_model(WHISPER_REPO, mx.float16)
+        mel = log_mel_spectrogram(samples.astype(np.float32), n_mels=model.dims.n_mels, padding=N_SAMPLES)
+        mel = pad_or_trim(mel, N_FRAMES, axis=-2).astype(mx.float16)
+        _, probs = model.detect_language(mel)
+        return float(probs.get(code, 0.0))
+
 
 class GroqEngine:
     name = "groq"

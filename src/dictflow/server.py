@@ -41,15 +41,37 @@ class Worker:
     def __init__(self, engine_name):
         self.engine = asr.get_engine(engine_name)
         self.lock = threading.Lock()
+        self.guard_whisper = None
         self.provider = cleanup.pick_provider()
 
     def warmup(self):
         self.engine.load()
         # Zeros: only exercises the model so the first real request is fast.
         self.engine.transcribe(np.zeros(audio.SR // 2, dtype=np.float32), audio.SR, "auto", "")
+        if config.get("DICTFLOW_LANG_GUARD", "") == "1" and self.engine.name == "parakeet":
+            self.guard_whisper = asr.WhisperEngine()
+            self.guard_whisper.load()
+            self.guard_whisper.lang_prob(np.zeros(audio.SR // 2, dtype=np.float32))  # load weights now, not on first EN-looking clip
         if self.provider != "none":
             # Off the startup path: a hung cleanup endpoint must not keep /health down.
             threading.Thread(target=cleanup.warm, args=(self.provider,), daemon=True).start()
+
+    def _lang_guard(self, raw, samples, d):
+        """Opt-in (DICTFLOW_LANG_GUARD=1). Parakeet output that looks English gets a Whisper language check; if the
+        audio is probably Portuguese (p(pt) > 0.5) it is re-transcribed with language='pt'. PT output pays nothing."""
+        if debug.guess_lang(raw) != "en":
+            return raw, 0
+        t = time.perf_counter()
+        try:
+            with self.lock:
+                if self.guard_whisper is None:
+                    self.guard_whisper = asr.WhisperEngine()
+                    self.guard_whisper.load()
+                if self.guard_whisper.lang_prob(samples, "pt") > 0.5:
+                    raw = self.guard_whisper.transcribe(samples, audio.SR, "pt", dictionary.asr_prompt(config.prompt(), d))[0] or raw
+        except Exception as e:
+            print(f"dictflow: lang guard failed: {type(e).__name__}", file=sys.stderr, flush=True)
+        return raw, _ms(t)
 
     def process(self, wav, do_cleanup, lang):
         timings = {"decode": 0, "asr": 0, "cleanup": 0}
@@ -70,6 +92,9 @@ class Worker:
                                                 dictionary.asr_prompt(config.prompt(), d))
             timings["asr"] = _ms(t)
         raw_engine = raw
+        if raw and self.engine.name == "parakeet" and config.get("DICTFLOW_LANG_GUARD", "") == "1":
+            raw, timings["guard"] = self._lang_guard(raw, samples, d)
+            raw_engine = raw
         try:
             raw = d.apply(raw)
         except Exception:

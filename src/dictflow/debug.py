@@ -15,7 +15,8 @@ from pathlib import Path
 KEEP = 30
 _counter = itertools.count(1)
 
-# Accent-free stopwords. Words that are valid in both languages (a, no, me, so...) are left out on purpose.
+# Accent-free stopwords. Words that are valid in both languages (a, no, me, so, do...) are left out of EN on purpose,
+# and so are English content words (lunch, meeting...): those are the lone English words being diagnosed.
 PT = set("""o os as um uma uns umas de do da dos das em na nos nas num numa por para com sem sobre entre ate
 e ou mas que se nao sim eu tu ele ela nos eles elas voce voces meu minha meus minhas teu tua seu sua nosso nossa
 isto isso aquilo este esta estes estas esse essa esses essas aquele aquela ao aos pelo pela pelos pelas
@@ -23,9 +24,9 @@ foi ser sou es somos sao era estou esta estao estava tem tenho temos tinha ha ja
 mais menos tambem quando como onde porque porquê entao pois depois antes agora hoje amanha ontem aqui ali la
 bom boa dia bem obrigado obrigada preciso precisa fazer faz vamos vai vou facto equipa contacto""".split())
 EN = set("""the an and or but of to in on at by for with from about into over than then that this these those
-i you he she it we they me my your his her its our their is are was were be been am do does did have has had
-will would can could should not it's don't just so very really what when where why how which who there here
-hello hi thanks thank please yes lunch meeting tomorrow today""".split())
+i you he she it we they my your his her its our their is are was were be been am does did have has had
+will would can could should not it's don't just very really what when where why how which who there here
+hello hi thanks thank please yes""".split())
 
 
 def _tokens(text):

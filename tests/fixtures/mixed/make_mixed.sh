@@ -29,6 +29,8 @@ mk m05_pipeline_mid_s 0 $S "PT|O pipeline" "PT|está parado desde ontem."
 mk m06_meeting_end_s 250 $S "PT|Vou marcar a" "EN|meeting"
 mk m07_crazy_no_s 0 $S "PT|Não" "EN|crazy" "PT|no sentido bom."
 mk m08_feedback_a_s 250 $S "PT|Dá-me" "EN|feedback" "PT|a sério."
+# the one reproduced Parakeet PT->EN flip (short clip, two English words): Parakeet gives "Foo crazy workflow on thy."
+mk s07_crazy_workflow_s 0 $S "PT|Foi" "EN|crazy workflow" "PT|ontem"
 # long (20-30 s), PT-heavy
 LONGA="PT|Então ontem estive a falar com o cliente sobre o projeto novo e ele disse que a equipa dele precisa de uma solução rápida para o problema das encomendas, porque neste momento perdem muito tempo a copiar dados de um sítio para o outro."
 LONGB="PT|Eu expliquei que podemos ligar o sistema deles ao nosso painel sem mudar nada do que já usam, e que na primeira semana conseguimos mostrar resultados concretos, com menos horas gastas em tarefas repetitivas."
