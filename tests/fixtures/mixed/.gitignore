@@ -1,0 +1,3 @@
+*.wav
+*.txt
+!make_mixed.sh

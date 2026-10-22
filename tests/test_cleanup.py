@@ -85,3 +85,14 @@ def test_pick_provider_ignores_api_key(monkeypatch):
     monkeypatch.delenv("DICTFLOW_CLEANUP", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     assert pick_provider() == "none"
+
+
+def test_pt_to_en_translation_falls_back():
+    """A flip to English by the LLM must never reach the paste: the guardrail keeps the raw PT text."""
+    for raw, out in [
+        ("isto está crazy de verdade", "This is really crazy."),
+        ("preciso de melhorar o workflow da equipa", "I need to improve the team's workflow."),
+        ("a entrega é sexta-feira e o deadline", "The delivery is on Friday and the deadline."),
+        ("falei com o João ontem e ele deu-me bom feedback sobre a proposta", "I spoke with João yesterday and he gave me good feedback about the proposal."),
+    ]:
+        assert clean(raw, "fake", call=lambda t: out)[0::2] == (raw, True)
