@@ -23,7 +23,11 @@ final class AudioRecorder {
             self.lock.lock(); self.pcm.append(chunk); self.lock.unlock()
         }
         engine.prepare()
-        try engine.start()
+        do { try engine.start() } catch {
+            input.removeTap(onBus: 0)   // else the next installTap raises an NSException
+            converter = nil
+            throw error
+        }
         running = true
     }
 

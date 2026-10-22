@@ -29,6 +29,8 @@ class Worker:
         self.engine.load()
         # Zeros: only exercises the model so the first real request is fast.
         self.engine.transcribe(np.zeros(audio.SR // 2, dtype=np.float32), audio.SR, "auto", "")
+        if self.provider != "none":
+            cleanup.warm(self.provider)
 
     def process(self, wav, do_cleanup, lang):
         timings = {"decode": 0, "asr": 0, "cleanup": 0}
@@ -37,7 +39,7 @@ class Worker:
             f.write(wav)
             f.flush()
             t = time.perf_counter()
-            samples = audio.trim_silence(audio.load_audio(f.name))
+            samples = audio.trim_silence(audio.load_audio(f.name, fmt="wav"))
             timings["decode"] = _ms(t)
         raw = ""
         if len(samples):
@@ -52,7 +54,9 @@ class Worker:
         return {"raw": raw, "text": text, "cleanup_provider": prov, "fell_back": fell_back, "timings_ms": timings}
 
 
-def make_handler(worker):
+def make_handler(worker, port):
+    allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code, obj):
             body = json.dumps(obj, ensure_ascii=False).encode()
@@ -68,9 +72,15 @@ def make_handler(worker):
         def _log(self, code, t0):
             print(f"{self.command} {self.path} -> {code} {_ms(t0)}ms", file=sys.stderr, flush=True)
 
+        def _forbidden(self):
+            """Browsers add Origin; DNS rebinding changes Host. The app sends neither."""
+            return self.headers.get("Origin") is not None or self.headers.get("Host") not in allowed_hosts
+
         def do_GET(self):
             t0 = time.perf_counter()
-            if urlparse(self.path).path == "/health":
+            if self._forbidden():
+                code, obj = 403, {"error": "forbidden"}
+            elif urlparse(self.path).path == "/health":
                 code, obj = 200, {"status": "ok", "engine": worker.engine.name, "cleanup_provider": worker.provider}
             else:
                 code, obj = 404, {"error": "not found"}
@@ -87,6 +97,9 @@ def make_handler(worker):
             self._log(code, t0)
 
         def _transcribe(self):
+            if self._forbidden() or self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "audio/wav":
+                self.close_connection = True
+                return 403, {"error": "forbidden"}
             u = urlparse(self.path)
             if u.path != "/transcribe":
                 return 404, {"error": "not found"}
@@ -120,12 +133,13 @@ def make_handler(worker):
 
 def serve(port=None, engine_name=None):
     port = port or config.port()
-    worker = Worker(engine_name or config.engine())
+    # Bind first: a duplicate worker fails at once instead of after loading the model.
+    # Requests queue in the backlog until serve_forever, so /health answers only once warm.
+    srv = ThreadingHTTPServer(("127.0.0.1", port), make_handler(worker := Worker(engine_name or config.engine()), port))
+    srv.daemon_threads = True
     t = time.perf_counter()
     worker.warmup()
     print(f"dictflow: engine={worker.engine.name} warm in {_ms(t)}ms cleanup={worker.provider}", file=sys.stderr, flush=True)
-    srv = ThreadingHTTPServer(("127.0.0.1", port), make_handler(worker))
-    srv.daemon_threads = True
     print(f"dictflow: listening on 127.0.0.1:{port}", file=sys.stderr, flush=True)
     try:
         srv.serve_forever()

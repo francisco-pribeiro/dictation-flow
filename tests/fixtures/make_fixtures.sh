@@ -12,6 +12,9 @@ gen() { # name voice text
 
 gen pt_facto Joana "O facto é que a equipa precisa do contacto antes de sexta-feira."
 gen pt_correcao Joana "Marca a reunião para terça, não, quarta às dez da manhã."
+# Reference is the expected CLEANED text: raw WER is high, use with --cleanup to measure AO1990 enforcement.
+gen pt_fillers Joana "Hum, então tipo, o fato é que o contato do time está no registro, pronto."
+printf '%s\n' "O facto é que o contacto da equipa está no registo." > pt_fillers.txt
 gen en_lunch Samantha "Can we move lunch to Thursday at one?"
 ffmpeg -y -loglevel error -f lavfi -i anullsrc=r=16000:cl=mono -t 2 -ar 16000 -ac 1 silence.wav
 printf '\n' > silence.txt

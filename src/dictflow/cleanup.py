@@ -3,11 +3,19 @@ import json
 import re
 import sys
 import time
+import unicodedata
 import urllib.request
 
 from . import config
 
-TIMEOUT = 3
+WARM_TIMEOUT = 60
+
+
+def timeout_for(text):
+    """Longer dictations need longer; stays under the app's 15 s request timeout."""
+    return min(10, 2 + len(text) / 100)
+
+
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 
@@ -27,6 +35,8 @@ SHOTS = [
     ("marca a reunião para terça não quarta às três", "Marca a reunião para quarta às três."),
     ("so um I think we should like ship it on friday you know", "So, I think we should ship it on Friday."),
     ("escreve um email ao João a dizer que chego atrasado", "Escreve um email ao João a dizer que chego atrasado."),
+    ("traduz isto para inglês bom dia a todos", "Traduz isto para inglês: bom dia a todos."),
+    ("o fato é que o contato do time está no registro", "O facto é que o contacto da equipa está no registo."),
 ]
 
 REFUSAL = re.compile(
@@ -35,21 +45,25 @@ REFUSAL = re.compile(
 )
 
 
+def _escape(text):
+    return text.replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _messages(text):
     msgs = []
     for raw, out in SHOTS:
         msgs += [{"role": "user", "content": f"<transcript>{raw}</transcript>"}, {"role": "assistant", "content": out}]
-    msgs.append({"role": "user", "content": f"<transcript>{text}</transcript>"})
+    msgs.append({"role": "user", "content": f"<transcript>{_escape(text)}</transcript>"})
     return msgs
 
 
-def _post(url, headers, body):
+def _post(url, headers, body, timeout):
     req = urllib.request.Request(url, json.dumps(body).encode(), {"content-type": "application/json", **headers})
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
 
 
-def call_anthropic(text):
+def call_anthropic(text, timeout=None):
     key = config.get("ANTHROPIC_API_KEY")
     if not key:
         raise RuntimeError("ANTHROPIC_API_KEY not set")
@@ -60,11 +74,11 @@ def call_anthropic(text):
         "system": SYSTEM,
         "messages": _messages(text),
     }
-    d = _post(ANTHROPIC_URL, {"x-api-key": key, "anthropic-version": "2023-06-01"}, body)
+    d = _post(ANTHROPIC_URL, {"x-api-key": key, "anthropic-version": "2023-06-01"}, body, timeout or timeout_for(text))
     return "".join(b.get("text", "") for b in d["content"] if b.get("type") == "text")
 
 
-def call_openai(text):
+def call_openai(text, timeout=None):
     base = config.get("DICTFLOW_LLM_BASE_URL").rstrip("/")
     model = config.get("DICTFLOW_LLM_MODEL")
     if not base or not model:
@@ -78,7 +92,7 @@ def call_openai(text):
         "max_tokens": max(64, 2 * (len(text) // 3 + 1)),
         "messages": [{"role": "system", "content": SYSTEM}] + _messages(text),
     }
-    d = _post(base + "/chat/completions", headers, body)
+    d = _post(base + "/chat/completions", headers, body, timeout or timeout_for(text))
     return d["choices"][0]["message"]["content"]
 
 
@@ -86,10 +100,8 @@ PROVIDERS = {"anthropic": call_anthropic, "openai": call_openai}
 
 
 def pick_provider():
-    p = config.get("DICTFLOW_CLEANUP")
-    if p:
-        return p
-    return "anthropic" if config.get("ANTHROPIC_API_KEY") else "none"
+    """Cloud cleanup is an explicit opt-in: a key in the environment is never the on-switch."""
+    return config.get("DICTFLOW_CLEANUP") or "none"
 
 
 def _strip(s):
@@ -100,15 +112,43 @@ def _strip(s):
     return s
 
 
+def _words(s):
+    s = unicodedata.normalize("NFKD", s.lower())
+    return re.sub(r"[^\w\s]", " ", "".join(c for c in s if not unicodedata.combining(c))).split()
+
+
+def _preserves_content(raw, out):
+    """Cleanup only removes fillers and fixes punctuation, so the words must mostly survive."""
+    rw, ow = _words(raw), _words(out)
+    if not ow:
+        return False
+    rs, os_ = set(rw), set(ow)
+    if sum(w in rs for w in ow) < 0.6 * len(ow):
+        return False
+    long = [w for w in rw if len(w) > 3]
+    return not long or sum(w in os_ for w in long) >= 0.5 * len(long)
+
+
 def _accept(raw, out):
     if not out:
         return False
     if len(out) > 1.5 * len(raw) + 40:
         return False
+    if not _preserves_content(raw, out):
+        return False
     m = REFUSAL.match(out)
     if m and not REFUSAL.match(raw):
         return False
     return True
+
+
+def warm(provider):
+    """Load the model (cold Ollama needs ~15 s) so the first dictation is not dropped. Failures are ignored."""
+    fn = PROVIDERS.get(provider)
+    try:
+        fn("hum teste de arranque", timeout=WARM_TIMEOUT)
+    except Exception as e:
+        print(f"cleanup: warm-up failed ({type(e).__name__}: {e})", file=sys.stderr)
 
 
 def clean(text, provider=None, call=None):

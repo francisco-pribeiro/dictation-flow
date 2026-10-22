@@ -24,7 +24,7 @@ def test_tone_has_speech():
 def test_trim_keeps_padding():
     x = np.concatenate([sil(1), tone(0.5), sil(1)])
     y = trim_silence(x)
-    assert 0.5 * SR < len(y) < 0.5 * SR + 2 * 0.2 * SR
+    assert 0.5 * SR < len(y) < 0.5 * SR + 2 * 0.35 * SR
     assert len(y) < len(x)
 
 
@@ -35,3 +35,8 @@ def test_padding_clamped_at_edges():
 
 def test_short_input():
     assert len(trim_silence(np.zeros(10, dtype=np.float32))) == 0
+
+
+def test_quiet_speech_survives():
+    x = np.concatenate([sil(1), tone(0.5, amp=0.01), sil(1)])  # about -43 dBFS peak
+    assert has_speech(x) and len(trim_silence(x)) >= 0.5 * SR

@@ -5,6 +5,8 @@ final class WorkerClient {
     let port: Int
     let projectDir: String
     private var child: Process?
+    private let startLock = NSLock()   // serializes check/spawn/wait so a second caller waits instead of spawning
+    private let childLock = NSLock()   // guards child; separate so Quit never waits for a 60 s startup
 
     init(projectDir: String) {
         self.projectDir = projectDir
@@ -34,23 +36,24 @@ final class WorkerClient {
 
     /// Blocking. Reuses a healthy worker, otherwise spawns one and waits up to 60 s.
     func ensureRunning() throws {
+        startLock.lock(); defer { startLock.unlock() }
         if healthy() { return }
         guard let uv = uvPath() else {
             throw NSError(domain: "DictFlow", code: 4, userInfo: [NSLocalizedDescriptionKey: "uv not found in /opt/homebrew/bin or ~/.local/bin"])
         }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: uv)
-        p.arguments = ["run", "--project", projectDir, "dictflow", "serve"]
+        p.arguments = ["run", "--project", projectDir, "dictflow", "serve", "--port", String(port)]
         p.currentDirectoryURL = URL(fileURLWithPath: projectDir)
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (env["PATH"] ?? "")
         p.environment = env
         try p.run()
-        child = p
+        childLock.lock(); child = p; childLock.unlock()
         let deadline = Date().addingTimeInterval(60)
         while Date() < deadline {
             if !p.isRunning {
-                child = nil
+                childLock.lock(); if child === p { child = nil }; childLock.unlock()
                 throw NSError(domain: "DictFlow", code: 5, userInfo: [NSLocalizedDescriptionKey: "worker exited with status \(p.terminationStatus)"])
             }
             if healthy() { return }
@@ -61,8 +64,8 @@ final class WorkerClient {
     }
 
     /// Blocking. POST WAV bytes, return the text field.
-    func transcribe(wav: Data) throws -> String {
-        var req = URLRequest(url: URL(string: "\(base)/transcribe")!)
+    func transcribe(wav: Data, cleanup: Bool = true) throws -> String {
+        var req = URLRequest(url: URL(string: "\(base)/transcribe\(cleanup ? "" : "?cleanup=0")")!)
         req.httpMethod = "POST"
         req.httpBody = wav
         req.timeoutInterval = 15
@@ -86,11 +89,14 @@ final class WorkerClient {
 
     /// Terminate the child we spawned (a reused worker is left alone).
     func shutdown() {
-        guard let p = child, p.isRunning else { child = nil; return }
+        childLock.lock()
+        let p = child
+        child = nil
+        childLock.unlock()
+        guard let p, p.isRunning else { return }
         p.terminate()
         let deadline = Date().addingTimeInterval(3)
         while p.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
         if p.isRunning { kill(p.processIdentifier, SIGKILL) }
-        child = nil
     }
 }

@@ -44,17 +44,35 @@ final class Inserter {
         return pb.changeCount
     }
 
-    /// Snapshot, write, paste, then restore after 250 ms if nobody else touched the clipboard.
+    /// True when the frontmost app is the one holding secure input (a password field). Secure input
+    /// held by a background app is ignored.
+    static func secureInputOnFrontmost() -> Bool {
+        guard IsSecureEventInputEnabled(),
+              let pid = (CGSessionCopyCurrentDictionary() as? [String: Any])?["kCGSSessionSecureInputPID"] as? Int32
+        else { return false }
+        return pid == NSWorkspace.shared.frontmostApplication?.processIdentifier
+    }
+
+    /// Called with a short reason when the text was left on the clipboard instead of pasted.
+    var onFallback: (String) -> Void = { _ in }
+
+    /// Snapshot, write, paste, then restore after 1 s if nobody else touched the clipboard.
     func insert(_ text: String) {
-        if IsSecureEventInputEnabled() || NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid() {
+        let reason: String?
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid() { reason = "DictFlow is frontmost" }
+        else if Inserter.secureInputOnFrontmost() { reason = "Secure input field" }
+        else if !AXIsProcessTrusted() { reason = "Accessibility missing" }
+        else { reason = nil }
+        if let reason {
             _ = write(text)   // leave it on the clipboard for a manual paste
+            onFallback("\(reason): text left on clipboard")
             NSSound.beep()
             return
         }
         let snap = snapshot()
         let count = write(text)
         pasteFunction()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
             if pb.changeCount == count { restore(snap) }
         }
     }

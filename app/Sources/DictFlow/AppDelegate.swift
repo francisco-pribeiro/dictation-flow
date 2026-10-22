@@ -55,6 +55,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         item.menu = menu
 
+        inserter.onFallback = { [weak self] msg in
+            self?.warningItem.title = msg
+            self?.warningItem.isHidden = false
+        }
         hotkey.onStart = { [weak self] in self?.startRecording() }
         hotkey.onStop = { [weak self] in self?.stopRecording() }
         hotkey.onCancel = { [weak self] in self?.cancelRecording() }
@@ -81,7 +85,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let s = Permissions.status()
         log("microphone=\(s.mic) accessibility=\(s.accessibility) input-monitoring=\(s.inputMonitoring)")
         if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
-            AVCaptureDevice.requestAccess(for: .audio) { ok in log("microphone request: \(ok)") }
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] ok in
+                log("microphone request: \(ok)")
+                DispatchQueue.main.async { self?.refreshWarning(); self?.refreshTitle() }
+            }
         }
         _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
         if !CGPreflightListenEventAccess() { _ = CGRequestListenEventAccess() }
@@ -109,11 +116,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: flow
 
     private func refreshTitle() {
-        item.button?.title = !tapOK ? "!" : state == .idle ? "◦" : state == .recording ? "●" : "…"
+        item.button?.title = !tapOK || !Permissions.missing().isEmpty ? "!" : state == .idle ? "◦" : state == .recording ? "●" : "…"
     }
 
     private func startRecording() {
         guard state == .idle else { return }
+        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
+            NSSound.beep(); refreshWarning(); refreshTitle()
+            return
+        }
         do {
             try recorder.start()
             state = .recording
@@ -134,13 +145,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard state == .recording else { return }
         let wav = recorder.stop()
         state = .working
+        let secure = Inserter.secureInputOnFrontmost()   // decide before any text leaves the machine
         DispatchQueue.global().async { [self] in
             do {
                 try worker.ensureRunning()
-                let text = try worker.transcribe(wav: wav).trimmingCharacters(in: .whitespacesAndNewlines)
+                let text = try worker.transcribe(wav: wav, cleanup: !secure).trimmingCharacters(in: .whitespacesAndNewlines)
                 DispatchQueue.main.async { [self] in
                     state = .idle
-                    guard !text.isEmpty else { return }
+                    guard !text.isEmpty else { NSSound.beep(); return }   // no speech detected
                     lastTranscript = text
                     transcriptItem.title = "Last: " + (text.count > 50 ? String(text.prefix(50)) + "…" : text)
                     inserter.insert(text)

@@ -54,23 +54,24 @@ Variables come from the environment or from `.env` at the repo root. A variable 
 | `DICTFLOW_ENGINE` | `parakeet` | ASR engine: `parakeet` (local, auto language), `whisper` (local, honours `DICTFLOW_LANG` and `DICTFLOW_PROMPT`), `groq` (cloud, needs `GROQ_API_KEY`) |
 | `DICTFLOW_LANG` | `auto` | `auto`, `pt` or `en`. Only forced by `whisper` and `groq` |
 | `DICTFLOW_PROMPT` | empty | Vocabulary hint for `whisper`/`groq`, e.g. `Vektrum, Order2Party, Supabase` |
-| `DICTFLOW_CLEANUP` | `anthropic` if `ANTHROPIC_API_KEY` is set, else `none` | Cleanup provider: `anthropic`, `openai` (any OpenAI-compatible endpoint) or `none` |
+| `DICTFLOW_CLEANUP` | `none` | Cleanup provider (explicit opt-in; an `ANTHROPIC_API_KEY` in the environment does not enable it): `anthropic`, `openai` (any OpenAI-compatible endpoint) or `none` |
 | `DICTFLOW_LLM_BASE_URL` | empty | Base URL for the `openai` provider, e.g. `http://localhost:11434/v1` |
 | `DICTFLOW_LLM_MODEL` | `claude-haiku-4-5-20251001` for `anthropic`; required for `openai` | Cleanup model name |
 | `DICTFLOW_LLM_API_KEY` | empty | Bearer key for the `openai` provider (not needed for Ollama) |
 | `ANTHROPIC_API_KEY` | empty | Key for the `anthropic` provider |
 | `GROQ_API_KEY` | empty | Key for the `groq` ASR engine |
-| `DICTFLOW_PORT` | `8765` | Worker port on `127.0.0.1` |
+| `DICTFLOW_PORT` | `8765` | Worker port on `127.0.0.1`. The app must see the same value in its own environment, otherwise it polls 8765 |
 
 The app also reads `DICTFLOW_HOTKEY` (`rightoption` by default, or `fn`, `rightcmd`) from its own environment, not from `.env`. It only applies when you start the binary from a terminal: `DICTFLOW_HOTKEY=rightcmd build/DictFlow.app/Contents/MacOS/DictFlow`.
 
-Cleanup never blocks dictation: it has a 3 s timeout, its output is checked (length, refusals), and on any failure the raw transcript is pasted.
+Cleanup never blocks dictation: its timeout scales with the text (2 s + 1 s per 100 characters, max 10 s), the worker warms the provider at startup (for Ollama also set `OLLAMA_KEEP_ALIVE=-1` so the model stays loaded), its output is checked (length, refusals, and that the original words are mostly preserved, which rejects answers, translations and rewrites) and the transcript is escaped inside the prompt, and on any failure the raw transcript is pasted.
 
 ### Cleanup setups
 
 Haiku (about cents per month):
 
 ```
+DICTFLOW_CLEANUP=anthropic
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
@@ -91,7 +92,7 @@ DICTFLOW_LLM_BASE_URL=http://localhost:11434/v1
 DICTFLOW_LLM_MODEL=qwen2.5:3b
 ```
 
-No cleanup: leave `DICTFLOW_CLEANUP` empty and `ANTHROPIC_API_KEY` unset (or `DICTFLOW_CLEANUP=none`).
+No cleanup: leave `DICTFLOW_CLEANUP` empty (or `none`).
 
 ## Signing
 
@@ -127,7 +128,7 @@ Silent clips are detected and skip the engine, so there are no silence hallucina
 
 ```bash
 curl -s http://127.0.0.1:8765/health
-curl -s -X POST --data-binary @tests/fixtures/pt_facto.wav 'http://127.0.0.1:8765/transcribe?cleanup=0'
+curl -s -X POST -H 'Content-Type: audio/wav' --data-binary @tests/fixtures/pt_facto.wav 'http://127.0.0.1:8765/transcribe?cleanup=0'
 ```
 
 The response is JSON: `raw`, `text`, `cleanup_provider`, `fell_back`, `timings_ms` (and `lang` when the engine detects it).
@@ -145,7 +146,7 @@ build/DictFlow.app/Contents/MacOS/DictFlow --check-permissions
 
 ## Benchmark
 
-`bench` runs each engine on every `.wav` that has a `.txt` reference next to it, and prints cold load time, warm median latency, real-time factor, word error rate, and any Brazilian-only spellings (`fato`, `contato`, `tela`, `registro`...) found in a Portuguese clip. Clips without a reference are skipped. Default clips: `tests/fixtures`.
+`bench` runs each engine on every `.wav` that has a `.txt` reference next to it, and prints cold load time, warm median latency, real-time factor, word error rate, and any Brazilian-only spellings (`fato`, `contato`, `tela`, `registro`...) found in a Portuguese clip. Clips without a reference are skipped. Default clips: `tests/fixtures` (`pt_fillers`, whose reference is the cleaned text, only with `--cleanup`).
 
 Record real clips of your own voice (in a throwaway folder), then write what you said as the reference:
 
@@ -171,7 +172,7 @@ These steps need a GUI and your hands, and have not been verified by automated t
 - [ ] 6. Same in Chrome, Slack or another Electron app, and in Terminal.
 - [ ] 7. Option+2 still types `@` and does not start a recording.
 - [ ] 8. A tap shorter than 250 ms does nothing.
-- [ ] 9. In a password field: no paste, a beep, and the text stays on the clipboard.
+- [ ] 9. In a password field (secure input held by the frontmost app): no cloud cleanup, no paste, a beep, and the text stays on the clipboard. With Accessibility missing the text also stays on the clipboard with a beep.
 - [ ] 10. The orange microphone indicator goes off after release.
 - [ ] 11. Quit kills the worker: `lsof -iTCP:8765` prints nothing.
 - [ ] 12. Do not run Wispr Flow on the same hotkey at the same time.
@@ -179,8 +180,9 @@ These steps need a GUI and your hands, and have not been verified by automated t
 
 ## Known limitations
 
-- Neither ASR engine controls the Portuguese dialect, so PT-BR spellings can appear in the raw transcript. The cleanup prompt enforces European orthography (AO1990), and `bench` flags the BR forms so you can A/B engines on your own voice. With cleanup off, you get what the engine gives.
-- Secure input: password fields and some apps enable secure event input, where pasting is blocked. DictFlow beeps and leaves the text on the clipboard.
-- Pasting is the insertion method, so it briefly uses the clipboard (restored after about 250 ms) and fails in apps that block Cmd-V.
+- Neither ASR engine controls the Portuguese dialect, so PT-BR spellings can appear in the raw transcript. The cleanup prompt asks for European orthography (AO1990) but small models do not always comply; with `--cleanup`, `bench` reports WER and BR flags on the cleaned text, and `pt_fillers` is a fixture for it. `bench` also flags the BR forms so you can A/B engines on your own voice. With cleanup off, you get what the engine gives.
+- Secure input: when the frontmost app holds secure input (a password field), DictFlow skips cloud cleanup, does not paste, beeps and leaves the text on the clipboard. Cmd-V itself is not blocked by secure input; the fallback exists for privacy. Secure input held by a background app is ignored.
+- A recording with no detected speech, or with the microphone/Accessibility permission missing, beeps instead of failing silently.
+- Pasting is the insertion method, so it briefly uses the clipboard (restored after about 1 s) and fails in apps that block Cmd-V.
 - Permissions must be granted again whenever the signing identity changes (including ad-hoc rebuilds).
 - Recording is capped at 120 s per hold.

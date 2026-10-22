@@ -45,9 +45,10 @@ def br_flags(ref, hyp):
     return sorted({m.group(1).lower() for m in _BR_RE.finditer(hyp)})
 
 
-def default_clips():
+def default_clips(with_cleanup=False):
+    """pt_fillers' reference is the cleaned text, so it only makes sense with --cleanup."""
     d = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
-    return sorted(d.glob("*.wav"))
+    return [f for f in sorted(d.glob("*.wav")) if with_cleanup or f.stem != "pt_fillers"]
 
 
 def _collect(paths):
@@ -75,7 +76,7 @@ def _ms(t0):
 def run(clip_paths=None, engines=("parakeet", "whisper"), runs=3, with_cleanup=False, max_wer=None):
     from . import asr
 
-    clips = _collect(clip_paths or default_clips())
+    clips = _collect(clip_paths or default_clips(with_cleanup))
     if not clips:
         print("no clips with references found", file=sys.stderr)
         return 1
@@ -108,16 +109,20 @@ def run(clip_paths=None, engines=("parakeet", "whisper"), runs=3, with_cleanup=F
                 text, _lang = eng.transcribe(samples, audio.SR, lang, prompt)
                 times.append(_ms(t))
             warm = statistics.median(times)
-            cms = "-"
+            cms, cleaned = "-", None
             if with_cleanup and text:
                 from . import cleanup
-                cms = f"{cleanup.clean(text)[3]:.0f}"
+                cleaned, _p, _fb, ms = cleanup.clean(text)
+                cms = f"{ms:.0f}"
             w = wer(ref, text)
             flags = br_flags(ref, text)
             wers.append(w)
             warms.append(warm)
             rtfs.append(warm / 1000 / dur)
-            print(f"{cname:<18}{dur:>7.1f}{warm:>9.0f}{rtfs[-1]:>7.2f}{cms:>9}{w:>7.2%}  {','.join(flags) or '-'}")
+            line = f"{cname:<18}{dur:>7.1f}{warm:>9.0f}{rtfs[-1]:>7.2f}{cms:>9}{w:>7.2%}  {','.join(flags) or '-'}"
+            if cleaned is not None:
+                line += f"  | cleaned WER {wer(ref, cleaned):.2%}, BR {','.join(br_flags(ref, cleaned)) or '-'}"
+            print(line)
         mean = statistics.mean(wers)
         worst = max(worst, mean)
         print(f"summary {name}: cold {cold:.0f} ms, warm median {statistics.median(warms):.0f} ms, "
