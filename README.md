@@ -85,10 +85,10 @@ Then do the manual checklist below once. To see the app's log while testing:
 open --stderr /tmp/dictflow.log build/DictFlow.app && tail -f /tmp/dictflow.log
 ```
 
-To use another hotkey, pass it at launch (quit the app first):
+To change the hotkey, use the menu: **Atalho** lists the presets (Option direito, Command direito, Control direito, Fn) with a checkmark on the current one, and **Gravar novo atalho...** records the next modifier key you press (Esc cancels; any modifier key works, left or right). It applies immediately and is saved to `~/Library/Application Support/DictFlow/settings.json`. The saved choice wins over `DICTFLOW_HOTKEY`, which only sets the default when settings.json has none:
 
 ```bash
-open --env DICTFLOW_HOTKEY=rightcmd build/DictFlow.app      # or fn, rightoption (default)
+open --env DICTFLOW_HOTKEY=rightcmd build/DictFlow.app      # or fn, rightctrl, rightoption (default)
 ```
 
 Do not start the binary inside `Contents/MacOS` from a terminal for real use: macOS then charges Microphone, Accessibility and Input Monitoring to the terminal, not to DictFlow.
@@ -112,7 +112,7 @@ Every variable is optional. With none set, the app uses local Parakeet, no clean
 | `ANTHROPIC_API_KEY` | empty | Required only for `DICTFLOW_CLEANUP=anthropic` |
 | `GROQ_API_KEY` | empty | Required only for `DICTFLOW_ENGINE=groq` |
 | `DICTFLOW_PORT` | `8765` | Worker port on `127.0.0.1`. If you change it, also launch the app with `open --env DICTFLOW_PORT=...`, otherwise the app polls 8765 |
-| `DICTFLOW_HOTKEY` | `rightoption` | App only, not read from `.env`: `rightoption`, `rightcmd` or `fn`. Set it with `open --env` (see Run) |
+| `DICTFLOW_HOTKEY` | `rightoption` | App only, not read from `.env`: `rightoption`, `rightcmd`, `rightctrl` or `fn`. Default only: a choice saved in `settings.json` (menu Atalho) wins. Set it with `open --env` (see Run) |
 | `DICTFLOW_SIGN_IDENTITY` | ad hoc | `build.sh` only: signing identity name (see Signing) |
 
 How cleanup fails safe: its timeout scales with the text (2 s + 1 s per 100 characters, max 10 s), the worker warms the provider in the background at startup (for Ollama also set `OLLAMA_KEEP_ALIVE=-1`), the transcript is escaped inside the prompt, and the output is checked (length, refusals, and that the original words mostly survive, allowing for removed fillers and PT-BR to PT-PT respellings). On any failure the raw transcript is pasted.
@@ -212,6 +212,7 @@ Headless self-tests of the app binary (after `./build.sh`):
 build/DictFlow.app/Contents/MacOS/DictFlow --convert tests/fixtures/pt_facto.wav /tmp/out.wav   # Swift WAV conversion
 build/DictFlow.app/Contents/MacOS/DictFlow --pipeline-test tests/fixtures/pt_facto.wav          # spawns the worker, transcribes, stops it
 build/DictFlow.app/Contents/MacOS/DictFlow --clipboard-test                                     # clipboard snapshot and restore; prints PASS
+build/DictFlow.app/Contents/MacOS/DictFlow --settings-test                                      # settings.json load/save, corrupt file, precedence, hotkey capture logic; prints PASS
 ```
 
 `--check-permissions` also exists, but run from a shell it reports the terminal's grants, not DictFlow's. Use the menu's Check permissions (with the `--stderr` log above) for the real state.
@@ -257,7 +258,9 @@ These steps need a GUI and your hands; no automated test covers them. Do them on
 10. **Cleanup** (only if `DICTFLOW_CLEANUP` is set). Dictate "hum tipo marca a reunião para terça não quarta às dez". Success: "Marca a reunião para quarta às dez." is pasted. If the raw text is pasted instead, the log of the worker shows why (`fallback to raw` or `rejected by guardrails`).
 11. **Password field.** In a login page's password field, dictate anything. Success: nothing is pasted, a beep, the menu shows "Secure input field: text left on clipboard", and the worker log shows the request with `cleanup=0`. (With `DICTFLOW_ENGINE=groq` the audio still goes to Groq; see Known limitations.)
 12. **Quit.** Quit from the menu. Success: `lsof -iTCP:8765 -sTCP:LISTEN` prints nothing.
-13. **Wispr Flow.** Do not run Wispr Flow on the same hotkey at the same time. If you switch DictFlow to `fn`, set System Settings > Keyboard > Press Globe key to: Do Nothing.
+13. **Atalho menu.** Open the menu-bar menu > Atalho. Success: the title shows the current key, the current preset has a checkmark. Pick Control direito: the checkmark moves, holding right Control now dictates and right Option no longer does, with no restart; `~/Library/Application Support/DictFlow/settings.json` contains `"hotkey": "rightctrl"`. Quit and relaunch: the choice persists (and wins over `DICTFLOW_HOTKEY`).
+14. **Gravar novo atalho.** Atalho > Gravar novo atalho..., press left Shift: the menu shows it checked and it works as the hotkey. Repeat and press Esc: nothing changes. While recording, typing letters does nothing to the choice. Success also requires Input Monitoring (otherwise the item just beeps).
+15. **Wispr Flow.** Do not run Wispr Flow on the same hotkey at the same time. If you switch DictFlow to `fn`, set System Settings > Keyboard > Press Globe key to: Do Nothing.
 
 ## Known limitations
 

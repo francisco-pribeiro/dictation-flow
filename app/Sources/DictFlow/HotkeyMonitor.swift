@@ -9,8 +9,14 @@ final class HotkeyMonitor {
     var onStop: () -> Void = {}
     var onCancel: () -> Void = {}
 
-    private let keyCode: Int64
-    private let mask: CGEventFlags
+    var onCaptured: (HotkeyKey) -> Void = { _ in }
+    var onCaptureCancelled: () -> Void = {}
+
+    private let lock = NSLock()
+    private var key: HotkeyKey
+    private var capturing = false
+    private var keyCode: Int64 { lock.lock(); defer { lock.unlock() }; return key.keyCode }
+    private var mask: CGEventFlags { lock.lock(); defer { lock.unlock() }; return CGEventFlags(rawValue: key.flag) }
     // Touched only on the tap thread.
     private var keyIsDown = false
     private var holding = false
@@ -20,13 +26,18 @@ final class HotkeyMonitor {
     private var tap: CFMachPort?
     private var thread: Thread?
 
-    init(name: String) {
-        switch name {
-        case "fn": (keyCode, mask) = (63, .maskSecondaryFn)
-        case "rightcmd": (keyCode, mask) = (54, .maskCommand)
-        default: (keyCode, mask) = (61, .maskAlternate)
-        }
+    init(key: HotkeyKey) { self.key = key }
+
+    /// Takes effect immediately; any hold in progress is dropped on the tap thread's next event.
+    func setKey(_ k: HotkeyKey) {
+        lock.lock(); key = k; lock.unlock()
+        keyIsDown = false
     }
+
+    /// The next modifier-only press becomes the new key (reported via onCaptured); Esc cancels.
+    func beginCapture() { lock.lock(); capturing = true; lock.unlock() }
+    func endCapture() { lock.lock(); capturing = false; lock.unlock() }
+    private var isCapturing: Bool { lock.lock(); defer { lock.unlock() }; return capturing }
 
     /// Returns false when the tap cannot be created (missing Input Monitoring permission).
     func start() -> Bool {
@@ -54,6 +65,14 @@ final class HotkeyMonitor {
     }
 
     private func handle(_ type: CGEventType, _ event: CGEvent) {
+        if isCapturing, type == .keyDown || type == .flagsChanged {
+            switch Hotkeys.capture(isKeyDown: type == .keyDown, keyCode: event.getIntegerValueField(.keyboardEventKeycode), flags: event.flags.rawValue) {
+            case .captured(let k): endCapture(); DispatchQueue.main.async { self.onCaptured(k) }
+            case .cancelled: endCapture(); DispatchQueue.main.async { self.onCaptureCancelled() }
+            case .none: break
+            }
+            return
+        }
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
             // Missed events: drop any hold in progress, then re-enable.

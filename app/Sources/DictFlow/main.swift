@@ -44,6 +44,9 @@ case "--pipeline-test":
 case "--clipboard-test":
     if Inserter().selfTest() { print("PASS") } else { print("FAIL"); exit(1) }
 
+case "--settings-test":
+    if Settings.selfTest() { print("PASS") } else { print("FAIL"); exit(1) }
+
 case "--check-permissions":
     let p = Permissions.status()
     print("microphone: \(p.mic)\naccessibility: \(p.accessibility ? "granted" : "not granted")\ninput-monitoring: \(p.inputMonitoring ? "granted" : "not granted")")
@@ -58,6 +61,6 @@ case nil:
 default:
     print("""
     DictFlow - menu-bar dictation client
-    Usage: DictFlow [--convert IN OUT | --pipeline-test FILE [--project DIR] | --clipboard-test | --check-permissions]
+    Usage: DictFlow [--convert IN OUT | --pipeline-test FILE [--project DIR] | --clipboard-test | --settings-test | --check-permissions]
     """)
 }

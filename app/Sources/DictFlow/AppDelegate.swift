@@ -30,7 +30,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let worker: WorkerClient
     private let recorder = AudioRecorder()
     private let inserter = Inserter()
-    private let hotkey = HotkeyMonitor(name: ProcessInfo.processInfo.environment["DICTFLOW_HOTKEY"] ?? "rightoption")
+    private var settings = Settings.load()
+    private lazy var hotkey = HotkeyMonitor(key: Hotkeys.resolve(settings: settings, env: ProcessInfo.processInfo.environment["DICTFLOW_HOTKEY"]))
+    private let hotkeyMenu = NSMenu()
+    private let hotkeyItem = NSMenuItem(title: "Atalho", action: nil, keyEquivalent: "")
+    private var capturing = false
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let transcriptItem = NSMenuItem(title: "No transcript yet", action: #selector(copyTranscript), keyEquivalent: "")
     private let warningItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -51,6 +55,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(transcriptItem)
         menu.addItem(warningItem)
         menu.addItem(check)
+        hotkeyItem.submenu = hotkeyMenu
+        menu.addItem(hotkeyItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         item.menu = menu
@@ -62,6 +68,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkey.onStart = { [weak self] in self?.startRecording() }
         hotkey.onStop = { [weak self] in self?.stopRecording() }
         hotkey.onCancel = { [weak self] in self?.cancelRecording() }
+        hotkey.onCaptured = { [weak self] k in self?.captured(k) }
+        hotkey.onCaptureCancelled = { [weak self] in self?.capturing = false; self?.rebuildHotkeyMenu() }
+        rebuildHotkeyMenu()
 
         for sig in [SIGTERM, SIGINT] {
             signal(sig, SIG_IGN)
@@ -111,6 +120,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !tapOK { tapOK = hotkey.start() }
         refreshWarning()
         refreshTitle()
+    }
+
+    // MARK: hotkey picker
+
+    private var currentKey: HotkeyKey { Hotkeys.resolve(settings: settings, env: ProcessInfo.processInfo.environment["DICTFLOW_HOTKEY"]) }
+
+    private func rebuildHotkeyMenu() {
+        hotkeyMenu.removeAllItems()
+        let cur = currentKey
+        hotkeyItem.title = capturing ? "Atalho: a gravar..." : "Atalho: \(cur.label)"
+        var keys = Hotkeys.presets
+        if !keys.contains(cur) { keys.insert(cur, at: 0) }   // a recorded non-preset key
+        for k in keys {
+            let mi = NSMenuItem(title: k.label, action: #selector(pickHotkey(_:)), keyEquivalent: "")
+            mi.target = self
+            mi.representedObject = k.name
+            mi.state = k == cur ? .on : .off
+            hotkeyMenu.addItem(mi)
+        }
+        hotkeyMenu.addItem(.separator())
+        let rec = NSMenuItem(title: capturing ? "A gravar: prime uma tecla modificadora (Esc cancela)" : "Gravar novo atalho...",
+                             action: capturing ? nil : #selector(recordHotkey), keyEquivalent: "")
+        rec.target = self
+        hotkeyMenu.addItem(rec)
+    }
+
+    private func apply(_ k: HotkeyKey) {
+        settings.hotkey = k.name
+        do { try settings.save() } catch { log("could not save settings: \(error.localizedDescription)") }
+        hotkey.setKey(k)
+        rebuildHotkeyMenu()
+    }
+
+    @objc private func pickHotkey(_ sender: NSMenuItem) {
+        guard let k = Hotkeys.key(named: sender.representedObject as? String) else { return }
+        if capturing { hotkey.endCapture(); capturing = false }
+        apply(k)
+    }
+
+    @objc private func recordHotkey() {
+        guard tapOK else { NSSound.beep(); return }   // the capture needs the event tap
+        capturing = true
+        hotkey.beginCapture()
+        rebuildHotkeyMenu()
+    }
+
+    private func captured(_ k: HotkeyKey) {
+        capturing = false
+        apply(k)
     }
 
     // MARK: flow
