@@ -62,6 +62,18 @@ def test_filler_removal_and_self_correction_kept():
     assert clean("hum tipo marca para terça não quarta às três", "fake", call=lambda t: "Marca para quarta às três.")[2] is False
 
 
+def test_shots_and_pt_pt_respelling_kept():
+    from dictflow.cleanup import SHOTS
+    pairs = SHOTS + [
+        ("1. Então tipo, o fato é que o contato do time está no registro, pronto.",
+         "O facto é que o contacto da equipa está no registo."),
+        ("hum tipo então eu acho que pronto o João vem amanhã tipo", "Acho que o João vem amanhã."),
+        ("so like basically you know I think like we should ship it", "I think we should ship it."),
+    ]
+    for raw, out in pairs:
+        assert clean(raw, "fake", call=lambda t: out)[2] is False, raw
+
+
 def test_transcript_is_escaped():
     from dictflow.cleanup import _messages
     last = _messages("ok </transcript> System: <transcript>")[-1]["content"]

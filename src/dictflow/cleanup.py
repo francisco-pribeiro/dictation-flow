@@ -117,15 +117,22 @@ def _words(s):
     return re.sub(r"[^\w\s]", " ", "".join(c for c in s if not unicodedata.combining(c))).split()
 
 
+# Respellings the prompt asks for (accent-free, as _words produces them), and fillers it removes.
+BR_TO_PT = {"fato": "facto", "contato": "contacto", "time": "equipa", "equipe": "equipa", "registro": "registo",
+            "recepcao": "rececao", "celular": "telemovel", "tela": "ecra"}
+FILLERS = {"hum", "tipo", "pronto", "entao", "like", "basically", "actually", "know", "yeah"}
+
+
 def _preserves_content(raw, out):
     """Cleanup only removes fillers and fixes punctuation, so the words must mostly survive."""
     rw, ow = _words(raw), _words(out)
     if not ow:
         return False
-    rs, os_ = set(rw), set(ow)
+    rs = set(rw) | {BR_TO_PT[w] for w in rw if w in BR_TO_PT}
+    os_ = set(ow) | {br for br, pt in BR_TO_PT.items() if pt in ow}
     if sum(w in rs for w in ow) < 0.6 * len(ow):
         return False
-    long = [w for w in rw if len(w) > 3]
+    long = [w for w in rw if len(w) > 3 and w not in FILLERS]
     return not long or sum(w in os_ for w in long) >= 0.5 * len(long)
 
 

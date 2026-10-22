@@ -30,7 +30,8 @@ class Worker:
         # Zeros: only exercises the model so the first real request is fast.
         self.engine.transcribe(np.zeros(audio.SR // 2, dtype=np.float32), audio.SR, "auto", "")
         if self.provider != "none":
-            cleanup.warm(self.provider)
+            # Off the startup path: a hung cleanup endpoint must not keep /health down.
+            threading.Thread(target=cleanup.warm, args=(self.provider,), daemon=True).start()
 
     def process(self, wav, do_cleanup, lang):
         timings = {"decode": 0, "asr": 0, "cleanup": 0}
@@ -84,7 +85,10 @@ def make_handler(worker, port):
                 code, obj = 200, {"status": "ok", "engine": worker.engine.name, "cleanup_provider": worker.provider}
             else:
                 code, obj = 404, {"error": "not found"}
-            self._send(code, obj)
+            try:
+                self._send(code, obj)
+            except OSError:
+                pass  # the app's 1 s health probe gave up while the model was loading
             self._log(code, t0)
 
         def do_POST(self):
