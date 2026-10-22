@@ -7,12 +7,15 @@ enum TimingLog {
     private static let queue = DispatchQueue(label: "dictflow.timinglog", qos: .utility)
     private static var path = NSHomeDirectory() + "/Library/Logs/DictFlow/timings.log"   // only touched on `queue`
 
-    static func record(audio: Double, chars: Int, meta: WorkerClient.Meta, sendMs: UInt64, requestMs: UInt64, pasteMs: UInt64, totalMs: UInt64) {
-        let line = format(date: Date(), audio: audio, chars: chars, meta: meta, sendMs: sendMs, requestMs: requestMs, pasteMs: pasteMs, totalMs: totalMs)
+    /// Chunked dictation extras, numbers only: segments sent, audio in the last one, release -> assembled text.
+    struct Chunks { let count: Int; let tailAudio: Double; let waitMs: UInt64 }
+
+    static func record(audio: Double, chars: Int, meta: WorkerClient.Meta, sendMs: UInt64, requestMs: UInt64, pasteMs: UInt64, totalMs: UInt64, chunks: Chunks? = nil) {
+        let line = format(date: Date(), audio: audio, chars: chars, meta: meta, sendMs: sendMs, requestMs: requestMs, pasteMs: pasteMs, totalMs: totalMs, chunks: chunks)
         queue.async { append(line) }
     }
 
-    static func format(date: Date, audio: Double, chars: Int, meta: WorkerClient.Meta, sendMs: UInt64, requestMs: UInt64, pasteMs: UInt64, totalMs: UInt64) -> String {
+    static func format(date: Date, audio: Double, chars: Int, meta: WorkerClient.Meta, sendMs: UInt64, requestMs: UInt64, pasteMs: UInt64, totalMs: UInt64, chunks: Chunks? = nil) -> String {
         // Hand-built UTC timestamp: ISO8601DateFormatter is slow to create and not needed here.
         var t = time_t(date.timeIntervalSince1970)
         var tmv = tm()
@@ -21,7 +24,9 @@ enum TimingLog {
         let a = Int(audio * 10 + 0.5)
         return "\(ts) audio=\(a / 10).\(a % 10)s chars=\(chars) engine=\(meta.engine) cleanup=\(meta.provider) fell_back=\(meta.fellBack) "
             + "worker_decode=\(meta.decode)ms worker_asr=\(meta.asr)ms worker_cleanup=\(meta.cleanup)ms worker_total=\(meta.total)ms "
-            + "release_to_send=\(sendMs)ms request=\(requestMs)ms paste=\(pasteMs)ms total=\(totalMs)ms\n"
+            + "release_to_send=\(sendMs)ms request=\(requestMs)ms paste=\(pasteMs)ms total=\(totalMs)ms"
+            + (chunks.map { c in let ta = Int(c.tailAudio * 10 + 0.5); return " chunks=\(c.count) tail_audio=\(ta / 10).\(ta % 10)s wait=\(c.waitMs)ms" } ?? "")
+            + "\n"
     }
 
     private static func pad(_ v: Int32) -> String { v < 10 ? "0\(v)" : "\(v)" }
@@ -59,6 +64,10 @@ enum TimingLog {
         let l = format(date: Date(timeIntervalSince1970: 0), audio: 3.04, chars: 42, meta: meta, sendMs: 5, requestMs: 900, pasteMs: 20, totalMs: 925)
         check(l.hasPrefix("1970-01-01T00:00:00Z audio=3.0s chars=42 engine=mlx cleanup=none fell_back=false "), "format: \(l)")
         check(l.hasSuffix("total=925ms\n") && l.contains("worker_asr=120ms"), "fields")
+        check(!l.contains("chunks="), "flag off: line unchanged, no chunk fields")
+        let lc = format(date: Date(timeIntervalSince1970: 0), audio: 25, chars: 300, meta: meta, sendMs: 5, requestMs: 900, pasteMs: 20, totalMs: 925,
+                        chunks: Chunks(count: 4, tailAudio: 3.26, waitMs: 905))
+        check(lc.hasSuffix("total=925ms chunks=4 tail_audio=3.3s wait=905ms\n"), "chunk fields: \(lc)")
 
         // Real file behaviour in a temp dir (queue is drained with a barrier sync; test only).
         let dir = NSTemporaryDirectory() + "dictflow-tl-\(getpid())"
