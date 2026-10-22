@@ -142,6 +142,7 @@ Every variable is optional. With none set, the app uses local Parakeet, no clean
 | `GROQ_API_KEY` | empty | Required only for `DICTFLOW_ENGINE=groq` |
 | `DICTFLOW_PORT` | `8765` | Worker port on `127.0.0.1`. If you change it, also launch the app with `open --env DICTFLOW_PORT=...`, otherwise the app polls 8765 |
 | `DICTFLOW_HOTKEY` | `rightoption` | App only, not read from `.env`: any `hotkey` name listed under settings.json (e.g. `rightcmd`, `rightctrl`, `fn`). Default only: a choice saved in `settings.json` (menu Atalho) wins. Set it with `open --env` (see Run) |
+| `DICTFLOW_DEBUG_CAPTURE` | off | `1` stores each dictation's audio and text locally for debugging (see Debug capture and replay) |
 | `DICTFLOW_SIGN_IDENTITY` | ad hoc | `build.sh` only: signing identity name (see Signing) |
 
 How cleanup fails safe: its timeout scales with the text (2 s + 1 s per 100 characters, max 10 s), the worker warms the provider in the background at startup (for Ollama also set `OLLAMA_KEEP_ALIVE=-1`), the transcript is escaped inside the prompt, and the output is checked (length, refusals, and that the original words mostly survive, allowing for removed fillers and PT-BR to PT-PT respellings). On any failure the raw transcript is pasted.
@@ -300,6 +301,20 @@ uv run dictflow bench ~/dictflow-clips --engines parakeet,whisper,groq --runs 5 
 ```
 
 `--max-wer 0.15` makes the command exit non-zero when mean raw WER is above the limit. `groq` is skipped when `GROQ_API_KEY` is unset. `ffmpeg` recording needs the terminal to have Microphone access.
+
+## Debug capture and replay
+
+Opt-in tool to find out who turns Portuguese-with-an-English-word into English: the ASR engine or the cleanup LLM.
+
+**Privacy: this stores your voice and your text on disk.** It is off by default. With `DICTFLOW_DEBUG_CAPTURE=1` the worker, after sending each `/transcribe` response (no added latency), writes `<UTC timestamp>-<n>.wav` (the audio you sent) and `.json` (engine output before and after the dictionary, final text, engine, lang, cleanup provider, `fell_back`, timings, and `guess_lang` of each) to `~/Library/Logs/DictFlow/debug/` (folder 0700, files 0600, newest 30 pairs kept). The worker prints `DEBUG CAPTURE ON` at startup when active.
+
+```bash
+# on: set it in .env (DICTFLOW_DEBUG_CAPTURE=1) or the environment, then restart the app
+# off: remove the line (or set it to 0), restart the app, then delete what was stored:
+rm -rf ~/Library/Logs/DictFlow/debug
+```
+
+`dictflow replay [FILES... | --dir DIR] [--engines parakeet,whisper-pt,whisper-auto] [--cleanup] [--json]` re-runs wavs (default: the debug folder) through each engine in process and prints one row per file and engine: milliseconds, guessed language (`pt`/`en`/`mixed`/`unknown`, stopword-based) and the first 80 characters. It flags `ENGINES DISAGREE` when engines differ in language and `FLIPPED AFTER ENGINE` when a capture's stored `raw_engine` language differs from its final text (the engine was right, cleanup or the dictionary changed it). `--cleanup` also runs the current cleanup provider on each engine's output (real API calls if a provider is set).
 
 ## Manual checklist
 

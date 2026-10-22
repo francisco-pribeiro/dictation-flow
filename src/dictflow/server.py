@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from . import asr, audio, cleanup, config, dictionary
+from . import asr, audio, cleanup, config, debug, dictionary
 
 MAX_BODY = 20 * 1024 * 1024
 
@@ -61,6 +61,7 @@ class Worker:
             samples = audio.trim_silence(audio.load_audio(f.name, fmt="wav"))
             timings["decode"] = _ms(t)
         raw = ""
+        raw_engine = ""
         d = dictionary.current()  # re-read only when the file changed
         if len(samples):
             t = time.perf_counter()
@@ -68,6 +69,7 @@ class Worker:
                 raw, _ = self.engine.transcribe(samples, audio.SR, lang or config.lang(),
                                                 dictionary.asr_prompt(config.prompt(), d))
             timings["asr"] = _ms(t)
+        raw_engine = raw
         try:
             raw = d.apply(raw)
         except Exception:
@@ -77,7 +79,7 @@ class Worker:
             text, prov, fell_back, timings["cleanup"] = cleanup.clean(raw, self.provider, d=d)
         timings["total"] = _ms(t_all)
         return {"raw": raw, "text": text, "cleanup_provider": prov, "fell_back": fell_back, "timings_ms": timings,
-                "engine": self.engine.name}
+                "engine": self.engine.name, "raw_engine": raw_engine}
 
 
 def make_handler(worker, port):
@@ -121,12 +123,15 @@ def make_handler(worker, port):
         def do_POST(self):
             t0 = time.perf_counter()
             self._extra = ""
+            self._capture = None
             code, obj = self._dictionary() if urlparse(self.path).path.startswith("/dictionary/") else self._transcribe()
             try:
                 self._send(code, obj)
             except OSError:
                 pass
             self._log(code, t0, getattr(self, "_extra", ""))
+            if self._capture:  # opt-in debug capture, strictly after the response
+                debug.capture(*self._capture)
 
         def _dictionary(self):
             """POST /dictionary/add {"entry": "..."} and POST /dictionary/ensure: same file logic as the CLI."""
@@ -184,6 +189,9 @@ def make_handler(worker, port):
             try:
                 res = worker.process(body, do_cleanup, lang)
                 self._extra = timing_suffix(wav_seconds(body), res)
+                raw_engine = res.pop("raw_engine", "")
+                if debug.enabled():
+                    self._capture = (body, lang, res, raw_engine)
                 return 200, res
             except (RuntimeError, ValueError) as e:
                 msg = str(e)
@@ -204,6 +212,9 @@ def serve(port=None, engine_name=None):
     t = time.perf_counter()
     worker.warmup()
     print(f"dictflow: engine={worker.engine.name} warm in {_ms(t)}ms cleanup={worker.provider}", file=sys.stderr, flush=True)
+    if debug.enabled():
+        print(f"dictflow: DEBUG CAPTURE ON: saving audio and text of every dictation to {debug.debug_dir()} "
+              f"(newest {debug.KEEP} kept); unset DICTFLOW_DEBUG_CAPTURE to stop", file=sys.stderr, flush=True)
     print(f"dictflow: listening on 127.0.0.1:{port}", file=sys.stderr, flush=True)
     try:
         srv.serve_forever()

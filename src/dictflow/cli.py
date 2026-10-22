@@ -109,6 +109,12 @@ def main(argv=None):
     b.add_argument("--runs", type=int, default=3)
     b.add_argument("--cleanup", action="store_true")
     b.add_argument("--max-wer", type=float)
+    r = sub.add_parser("replay", help="re-run debug captures (or any wavs) through several engines")
+    r.add_argument("files", nargs="*")
+    r.add_argument("--dir", help="folder of wavs (default: the debug capture folder)")
+    r.add_argument("--engines", default="parakeet,whisper-pt,whisper-auto")
+    r.add_argument("--cleanup", action="store_true")
+    r.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
     if not args.cmd:
         p.print_help()
@@ -137,6 +143,15 @@ def main(argv=None):
         try:
             return bench.run(args.clips, [e.strip() for e in args.engines.split(",") if e.strip()],
                              args.runs, args.cleanup, args.max_wer)
+        except (RuntimeError, ValueError, OSError) as e:
+            print(f"dictflow: error: {e}", file=sys.stderr)
+            return 1
+    if args.cmd == "replay":
+        from . import debug
+
+        try:
+            return debug.run_replay(args.files, args.dir, [e.strip() for e in args.engines.split(",") if e.strip()],
+                                    args.cleanup, args.json)
         except (RuntimeError, ValueError, OSError) as e:
             print(f"dictflow: error: {e}", file=sys.stderr)
             return 1
