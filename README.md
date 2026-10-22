@@ -143,6 +143,10 @@ Every variable is optional. With none set, the app uses local Parakeet, no clean
 | `DICTFLOW_PORT` | `8765` | Worker port on `127.0.0.1`. If you change it, also launch the app with `open --env DICTFLOW_PORT=...`, otherwise the app polls 8765 |
 | `DICTFLOW_HOTKEY` | `rightoption` | App only, not read from `.env`: any `hotkey` name listed under settings.json (e.g. `rightcmd`, `rightctrl`, `fn`). Default only: a choice saved in `settings.json` (menu Atalho) wins. Set it with `open --env` (see Run) |
 | `DICTFLOW_DEBUG_CAPTURE` | off | `1` stores each dictation's audio and text locally for debugging (see Debug capture and replay) |
+| `DICTFLOW_CHUNKING` | off | App only: `1` turns on chunked dictation (see Chunked dictation); `0` forces it off. Also a `settings.json` key `"chunking": true`, for an app launched from Finder |
+| `DICTFLOW_CHUNK_PAUSE_MS` | `450` | App only: pause that closes a segment, clamped to 350-500 |
+| `DICTFLOW_CHUNK_MIN_MS` | `2500` | App only: minimum speech in a segment before a pause may close it (1000-10000) |
+| `DICTFLOW_CHUNK_CONTEXT` | on | App only: `0` sends segments in parallel with no previous-segment context |
 | `DICTFLOW_SIGN_IDENTITY` | ad hoc | `build.sh` only: signing identity name (see Signing) |
 
 How cleanup fails safe: its timeout scales with the text (2 s + 1 s per 100 characters, max 10 s), the worker warms the provider in the background at startup (for Ollama also set `OLLAMA_KEEP_ALIVE=-1`), the transcript is escaped inside the prompt, and the output is checked (length, refusals, and that the original words mostly survive, allowing for removed fillers and PT-BR to PT-PT respellings). On any failure the raw transcript is pasted.
@@ -301,6 +305,18 @@ uv run dictflow bench ~/dictflow-clips --engines parakeet,whisper,groq --runs 5 
 ```
 
 `--max-wer 0.15` makes the command exit non-zero when mean raw WER is above the limit. `groq` is skipped when `GROQ_API_KEY` is unset. `ffmpeg` recording needs the terminal to have Microphone access.
+
+## Chunked dictation (experimental, off by default)
+
+Goal: shorten the wait between releasing the key and the text appearing for 20-30 s dictations, by working while you are still speaking. With `DICTFLOW_CHUNKING=1` (or `"chunking": true` in `settings.json`) the app watches the microphone for a pause of at least 450 ms (after at least 2.5 s of speech) and sends the finished piece to the worker at once, while recording continues. Each piece is transcribed and cleaned with the previous piece's final text as read-only context (header `X-DictFlow-Context`, base64; a header and not a query parameter, because the worker logs the path). On release only the last piece is sent, and the text is pasted once, when every piece has come back, in order. Nothing is pasted early. Hold, double-tap latch, Esc, the 250 ms minimum hold and the 120 s cap are unchanged. With the flag off the code path is the single-shot one.
+
+- Cuts are made in the middle of the pause, so no audio is lost or duplicated, and never inside speech. No pause means one piece, identical to the single-shot request.
+- Failures: a piece that fails is retried once (after making sure the worker is up, which covers a worker restart mid-dictation). If it still fails, the other pieces are pasted and the app beeps and logs the piece number; speech is never dropped silently. Esc discards everything in flight.
+- Privacy difference from the single-shot path: earlier pieces reach the cleanup provider while you are still talking. The secure-input (password field) check runs each time a piece closes and again at release; once it trips, the remaining pieces go without cleanup, but pieces already sent are not recalled.
+- Debug capture stores each piece as its own dictation, so `KEEP` covers fewer dictations.
+- The timing log line gains ` chunks=N tail_audio=X.Xs wait=...ms` (wait = release until the assembled text is ready, before the paste).
+- Code: `Segmenter.swift` (pause detection), `ChunkAssembler.swift` (numbering, context chaining, ordering, retry, Esc), `ChunkSession.swift` (glue, shared by the app and the simulation). Self-test: `DictFlow --chunking-test`. Cut times of a file: `DictFlow --segment FILE`; `tests/fixtures/check_cuts.py BINARY` checks them against `composite_pt25.cuts.json`.
+- Headless latency simulation (needs a worker on its own port, never your 8765): `DICTFLOW_PORT=8791 DictFlow --chunk-sim tests/fixtures/composite_pt25.wav --ab 5 --project DIR`. It streams the WAV at real-time pace through the real segmenter, assembler and worker client and reports release-to-text for single-shot and chunked runs, interleaved. `DICTFLOW_CLEANUP=sim` on the worker replaces Haiku with a sleep of 850 ms + 1.7 ms per character (test only, no API calls). Fixtures: `tests/fixtures/make_composite.sh`.
 
 ## Debug capture and replay
 

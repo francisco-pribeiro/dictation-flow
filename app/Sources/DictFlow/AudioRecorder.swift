@@ -7,6 +7,11 @@ final class AudioRecorder {
     private var pcm = Data()
     private var converter: AVAudioConverter?
     private var running = false
+    private var sink: ((Data) -> Void)?
+
+    /// Optional live PCM consumer (chunked dictation). Called from the audio tap under the lock, so it must
+    /// only enqueue. nil (the default) leaves the recorder exactly as it was.
+    func setSink(_ s: ((Data) -> Void)?) { lock.lock(); sink = s; lock.unlock() }
 
     func start() throws {
         lock.lock(); pcm = Data(); lock.unlock()
@@ -20,7 +25,7 @@ final class AudioRecorder {
             guard let self, let conv = self.converter else { return }
             var chunk = Data()
             try? WavFormat.convert(conv, input: buf, into: &chunk)
-            self.lock.lock(); self.pcm.append(chunk); self.lock.unlock()
+            self.lock.lock(); self.pcm.append(chunk); self.sink?(chunk); self.lock.unlock()
         }
         engine.prepare()
         do { try engine.start() } catch {

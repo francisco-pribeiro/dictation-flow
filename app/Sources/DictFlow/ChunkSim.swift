@@ -66,9 +66,9 @@ enum ChunkSim {
         let s = v.sorted(); return s.isEmpty ? 0 : (s.count % 2 == 1 ? s[s.count / 2] : (s[s.count / 2 - 1] + s[s.count / 2]) / 2)
     }
 
-    /// `--chunk-sim FILE [--ab N | --single | --runs N] [--out DIR] [--no-context] [--project DIR]`
+    /// `--chunk-sim FILE [--ab N [--no-warmup] | --single | --runs N] [--out DIR] [--no-context] [--project DIR]`
     static func main(args: [String], projectDir: String) {
-        guard args.count >= 2 else { fail("usage: DictFlow --chunk-sim FILE [--ab N | --single | --runs N] [--out DIR] [--no-context]") }
+        guard args.count >= 2 else { fail("usage: DictFlow --chunk-sim FILE [--ab N [--no-warmup] | --single | --runs N] [--out DIR] [--no-context]") }
         let env = ProcessInfo.processInfo.environment
         let worker = WorkerClient(projectDir: projectDir)
         let wav: Data
@@ -82,7 +82,7 @@ enum ChunkSim {
 
         var plan: [String] = []
         if let n = argValue("--ab").flatMap({ Int($0) }) {
-            plan = ["single!", "chunked!"]   // "!" = discarded warm-up
+            plan = args.contains("--no-warmup") ? [] : ["single!", "chunked!"]   // "!" = discarded warm-up
             for _ in 0..<n { plan += ["single", "chunked"] }
         } else {
             let n = argValue("--runs").flatMap({ Int($0) }) ?? 1

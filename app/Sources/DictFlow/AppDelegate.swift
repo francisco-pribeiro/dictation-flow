@@ -49,6 +49,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var state = State.idle { didSet { if state != .recording { latched = false }; refreshTitle() } }
     private var tapOK = false
     private var signalSources: [DispatchSourceSignal] = []
+    /// Chunked dictation (DICTFLOW_CHUNKING=1 or settings "chunking"): off by default; off leaves the single-shot path untouched.
+    private lazy var chunkingOn = Settings.chunkingEnabled(settings: settings, env: ProcessInfo.processInfo.environment["DICTFLOW_CHUNKING"])
+    private var chunkSession: ChunkSession?
 
     init(projectDir: String) { worker = WorkerClient(projectDir: projectDir) }
 
@@ -287,12 +290,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSSound.beep(); refreshWarning(); refreshTitle()
             return false
         }
+        if chunkingOn {
+            let env = ProcessInfo.processInfo.environment
+            let session = ChunkSession(config: Segmenter.Config.from(env: env), chain: env["DICTFLOW_CHUNK_CONTEXT"] != "0",
+                                       secureCheck: { DispatchQueue.main.sync { Inserter.secureInputOnFrontmost() } },
+                                       transport: worker.chunkTransport())
+            chunkSession = session
+            recorder.setSink { session.feed($0) }
+        }
         do {
             try recorder.start()
             state = .recording
             return true
         } catch {
             _ = recorder.stop()
+            endChunking(cancel: true)
             log("recorder start failed: \(error.localizedDescription)")
             NSSound.beep()
             return false
@@ -310,11 +322,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func cancelRecording() {
         guard state == .recording else { return }
         _ = recorder.stop()   // engine stops so the mic indicator goes off
+        endChunking(cancel: true)
         state = .idle
+    }
+
+    private func endChunking(cancel: Bool) {
+        recorder.setSink(nil)
+        if cancel { chunkSession?.cancel() }
+        chunkSession = nil
+    }
+
+    /// Release with chunking on: only the last segment is sent now; everything before it was sent while talking.
+    /// Pastes once, after every segment has resolved in order. A failed segment never drops the others.
+    private func stopChunked(_ session: ChunkSession) {
+        let tRelease = DispatchTime.now().uptimeNanoseconds
+        let wav = recorder.stop()
+        endChunking(cancel: false)
+        state = .working
+        let secure = Inserter.secureInputOnFrontmost()
+        session.finish(secureAtRelease: secure) { [self] r in
+            let tDone = DispatchTime.now().uptimeNanoseconds
+            DispatchQueue.main.async { [self] in
+                state = .idle
+                let o = r.outcome
+                if !o.failed.isEmpty { log("chunked: \(o.failed.count) of \(o.segments) segments failed (indices \(o.failed)); pasting the rest"); NSSound.beep() }
+                guard !o.text.isEmpty else { if o.failed.isEmpty { NSSound.beep() }; return }
+                let text = o.text
+                lastTranscript = text
+                transcriptItem.title = "Last: " + (text.count > 50 ? String(text.prefix(50)) + "…" : text)
+                inserter.insert(text)
+                let tPaste = DispatchTime.now().uptimeNanoseconds
+                let ms = { (a: UInt64, b: UInt64) in b > a ? (b - a) / 1_000_000 : 0 }
+                let audio = Double(max(wav.count - 44, 0)) / 32000
+                log("timing chunks=\(o.segments) tail_audio=\(String(format: "%.1f", r.tailAudio))s wait=\(ms(tRelease, tDone))ms paste=\(ms(tDone, tPaste))ms total=\(ms(tRelease, tPaste))ms audio=\(String(format: "%.1f", audio))s")
+                TimingLog.record(audio: audio, chars: text.count, meta: o.lastMeta ?? WorkerClient.Meta(), sendMs: ms(tRelease, o.lastSentNs),
+                                 requestMs: ms(o.lastSentNs, o.lastDoneNs), pasteMs: ms(tDone, tPaste), totalMs: ms(tRelease, tPaste),
+                                 chunks: TimingLog.Chunks(count: o.segments, tailAudio: r.tailAudio, waitMs: ms(tRelease, tDone)))
+            }
+        }
     }
 
     private func stopRecording() {
         guard state == .recording else { return }
+        if let session = chunkSession { stopChunked(session); return }
         let tRelease = DispatchTime.now().uptimeNanoseconds
         let wav = recorder.stop()
         state = .working

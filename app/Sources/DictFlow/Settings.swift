@@ -79,6 +79,19 @@ struct Settings {
         set { values["pasteShortcut"] = newValue }
     }
 
+    /// Opt-in chunked dictation (also DICTFLOW_CHUNKING=1). An app launched from Finder gets no shell env, so it is a setting too.
+    var chunking: Bool? {
+        get { values["chunking"] as? Bool }
+        set { values["chunking"] = newValue }
+    }
+
+    /// DICTFLOW_CHUNKING ("1"/"0") wins over the setting; default off.
+    static func chunkingEnabled(settings: Settings, env: String?) -> Bool {
+        if env == "1" { return true }
+        if env == "0" { return false }
+        return settings.chunking ?? false
+    }
+
     /// Missing, unreadable or corrupt file gives empty settings (defaults apply).
     static func load(from url: URL = defaultURL) -> Settings {
         var s = Settings()
@@ -125,6 +138,16 @@ struct Settings {
         a.hotkey = "bogus"
         check(Hotkeys.resolve(settings: a, env: "rightcmd").name == "rightcmd", "bogus setting falls to env")
         check(Hotkeys.resolve(settings: a, env: "bogus").name == "rightoption", "bogus everywhere gives default")
+
+        // chunking: off by default, env beats setting, non-bool setting ignored
+        var ch = Settings()
+        check(!Settings.chunkingEnabled(settings: ch, env: nil), "chunking default off")
+        ch.chunking = true
+        check(Settings.chunkingEnabled(settings: ch, env: nil), "chunking from settings")
+        check(!Settings.chunkingEnabled(settings: ch, env: "0"), "env 0 beats setting")
+        check(Settings.chunkingEnabled(settings: Settings(), env: "1"), "env 1 turns it on")
+        try? Data(#"{"chunking":"yes"}"#.utf8).write(to: url)
+        check(Settings.load(from: url).chunking == nil && !Settings.chunkingEnabled(settings: Settings.load(from: url), env: nil), "non-bool chunking ignored")
 
         // presets and key codes are unique
         check(Hotkeys.presets.map(\.name) == ["rightoption", "rightcmd", "rightctrl", "fn"], "presets")
