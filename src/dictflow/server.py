@@ -1,4 +1,6 @@
 """Warm localhost worker: model loaded once, HTTP on 127.0.0.1 only."""
+import base64
+import binascii
 import io
 import json
 import os
@@ -15,6 +17,20 @@ import numpy as np
 from . import asr, audio, cleanup, config, debug, dictionary
 
 MAX_BODY = 20 * 1024 * 1024
+MAX_CONTEXT = 2000
+
+
+def decode_context(value):
+    """X-DictFlow-Context: base64 UTF-8 text, at most MAX_CONTEXT characters. Anything else is ignored (None).
+    A header, not a query parameter: the request path is logged, the context must never be."""
+    if not value:
+        return None
+    try:
+        text = base64.b64decode(value, validate=True).decode("utf-8")
+    except (binascii.Error, ValueError):
+        return None
+    text = text.strip()
+    return text if 0 < len(text) <= MAX_CONTEXT else None
 
 
 def _ms(t0):
@@ -30,11 +46,12 @@ def wav_seconds(wav):
         return 0.0
 
 
-def timing_suffix(audio_s, res):
+def timing_suffix(audio_s, res, has_context=False):
     """Latency summary for the request log. Numbers and flags only, never transcript text."""
     t = res["timings_ms"]
     return (f" decode={t['decode']}ms asr={t['asr']}ms cleanup={t['cleanup']}ms total={t['total']}ms"
-            f" audio={audio_s:.1f}s chars={len(res['text'])} fell_back={str(bool(res['fell_back'])).lower()}")
+            f" audio={audio_s:.1f}s chars={len(res['text'])} fell_back={str(bool(res['fell_back'])).lower()}"
+            + (" ctx=1" if has_context else ""))
 
 
 class Worker:
@@ -51,7 +68,7 @@ class Worker:
             # Off the startup path: a hung cleanup endpoint must not keep /health down.
             threading.Thread(target=cleanup.warm, args=(self.provider,), daemon=True).start()
 
-    def process(self, wav, do_cleanup, lang):
+    def process(self, wav, do_cleanup, lang, context=None):
         timings = {"decode": 0, "asr": 0, "cleanup": 0}
         t_all = time.perf_counter()
         with tempfile.NamedTemporaryFile(suffix=".wav") as f:
@@ -76,7 +93,7 @@ class Worker:
             pass  # a dictionary bug must never drop a dictation
         text, prov, fell_back = raw, "none", False
         if do_cleanup and raw:
-            text, prov, fell_back, timings["cleanup"] = cleanup.clean(raw, self.provider, d=d)
+            text, prov, fell_back, timings["cleanup"] = cleanup.clean(raw, self.provider, d=d, context=context)
         timings["total"] = _ms(t_all)
         return {"raw": raw, "text": text, "cleanup_provider": prov, "fell_back": fell_back, "timings_ms": timings,
                 "engine": self.engine.name, "raw_engine": raw_engine}
@@ -185,10 +202,11 @@ def make_handler(worker, port):
                 return 400, {"error": "lang must be auto, pt or en"}
             default = "0" if worker.provider == "none" else "1"
             do_cleanup = q.get("cleanup", [default])[0] != "0"
+            context = decode_context(self.headers.get("X-DictFlow-Context"))
             body = self.rfile.read(n)
             try:
-                res = worker.process(body, do_cleanup, lang)
-                self._extra = timing_suffix(wav_seconds(body), res)
+                res = worker.process(body, do_cleanup, lang, context=context)
+                self._extra = timing_suffix(wav_seconds(body), res, context is not None)
                 raw_engine = res.pop("raw_engine", "")
                 if debug.enabled():
                     self._capture = (body, lang, res, raw_engine)
