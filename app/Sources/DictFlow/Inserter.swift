@@ -1,13 +1,21 @@
 import AppKit
+import Carbon.HIToolbox
 
-/// Clipboard-based text insertion. The actual Cmd-V is injected via `pasteFunction` (T7).
+/// Clipboard-based text insertion; Cmd-V is injected via `pasteFunction`.
 final class Inserter {
     static let transient = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
     static let concealed = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
 
     typealias Snapshot = [[(NSPasteboard.PasteboardType, Data)]]
 
-    var pasteFunction: () -> Void = {}
+    var pasteFunction: () -> Void = {
+        let src = CGEventSource(stateID: .hidSystemState)
+        for down in [true, false] {
+            let e = CGEvent(keyboardEventSource: src, virtualKey: 9, keyDown: down)
+            e?.flags = .maskCommand
+            e?.post(tap: .cghidEventTap)
+        }
+    }
     private let pb = NSPasteboard.general
 
     func snapshot() -> Snapshot {
@@ -38,6 +46,11 @@ final class Inserter {
 
     /// Snapshot, write, paste, then restore after 250 ms if nobody else touched the clipboard.
     func insert(_ text: String) {
+        if IsSecureEventInputEnabled() || NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid() {
+            _ = write(text)   // leave it on the clipboard for a manual paste
+            NSSound.beep()
+            return
+        }
         let snap = snapshot()
         let count = write(text)
         pasteFunction()

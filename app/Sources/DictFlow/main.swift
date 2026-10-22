@@ -44,8 +44,16 @@ case "--pipeline-test":
 case "--clipboard-test":
     if Inserter().selfTest() { print("PASS") } else { print("FAIL"); exit(1) }
 
+case "--check-permissions":
+    let p = Permissions.status()
+    print("microphone: \(p.mic)\naccessibility: \(p.accessibility ? "granted" : "not granted")\ninput-monitoring: \(p.inputMonitoring ? "granted" : "not granted")")
+
 case nil:
-    print("DictFlow app mode is not implemented yet (T7).")
+    let app = NSApplication.shared
+    let delegate = AppDelegate(projectDir: projectDir())
+    app.delegate = delegate
+    app.setActivationPolicy(.accessory)
+    app.run()
 
 default:
     print("""
