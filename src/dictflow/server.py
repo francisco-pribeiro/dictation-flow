@@ -1,10 +1,12 @@
 """Warm localhost worker: model loaded once, HTTP on 127.0.0.1 only."""
+import io
 import json
 import os
 import sys
 import tempfile
 import threading
 import time
+import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -17,6 +19,22 @@ MAX_BODY = 20 * 1024 * 1024
 
 def _ms(t0):
     return round((time.perf_counter() - t0) * 1000)
+
+
+def wav_seconds(wav):
+    """Duration of a WAV body in seconds, 0.0 if unreadable."""
+    try:
+        with wave.open(io.BytesIO(wav)) as w:
+            return w.getnframes() / w.getframerate()
+    except Exception:
+        return 0.0
+
+
+def timing_suffix(audio_s, res):
+    """Latency summary for the request log. Numbers and flags only, never transcript text."""
+    t = res["timings_ms"]
+    return (f" decode={t['decode']}ms asr={t['asr']}ms cleanup={t['cleanup']}ms total={t['total']}ms"
+            f" audio={audio_s:.1f}s chars={len(res['text'])} fell_back={str(bool(res['fell_back'])).lower()}")
 
 
 class Worker:
@@ -76,8 +94,8 @@ def make_handler(worker, port):
         def log_message(self, fmt, *args):
             pass  # one line per request is logged in _log
 
-        def _log(self, code, t0):
-            print(f"{self.command} {self.path} -> {code} {_ms(t0)}ms", file=sys.stderr, flush=True)
+        def _log(self, code, t0, extra=""):
+            print(f"{self.command} {self.path} -> {code} {_ms(t0)}ms{extra}", file=sys.stderr, flush=True)
 
         def _forbidden(self):
             """Browsers add Origin; DNS rebinding changes Host. The app sends neither."""
@@ -101,12 +119,13 @@ def make_handler(worker, port):
 
         def do_POST(self):
             t0 = time.perf_counter()
+            self._extra = ""
             code, obj = self._dictionary() if urlparse(self.path).path.startswith("/dictionary/") else self._transcribe()
             try:
                 self._send(code, obj)
             except OSError:
                 pass
-            self._log(code, t0)
+            self._log(code, t0, getattr(self, "_extra", ""))
 
         def _dictionary(self):
             """POST /dictionary/add {"entry": "..."} and POST /dictionary/ensure: same file logic as the CLI."""
@@ -162,7 +181,9 @@ def make_handler(worker, port):
             do_cleanup = q.get("cleanup", [default])[0] != "0"
             body = self.rfile.read(n)
             try:
-                return 200, worker.process(body, do_cleanup, lang)
+                res = worker.process(body, do_cleanup, lang)
+                self._extra = timing_suffix(wav_seconds(body), res)
+                return 200, res
             except (RuntimeError, ValueError) as e:
                 msg = str(e)
                 # decode failures are the caller's problem; anything else is ours

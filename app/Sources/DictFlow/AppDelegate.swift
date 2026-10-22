@@ -315,19 +315,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func stopRecording() {
         guard state == .recording else { return }
+        let tRelease = DispatchTime.now().uptimeNanoseconds
         let wav = recorder.stop()
         state = .working
         let secure = Inserter.secureInputOnFrontmost()   // decide before any text leaves the machine
         DispatchQueue.global().async { [self] in
             do {
                 try worker.ensureRunning()
+                let tSend = DispatchTime.now().uptimeNanoseconds
                 let text = try worker.transcribe(wav: wav, cleanup: !secure).trimmingCharacters(in: .whitespacesAndNewlines)
+                let tResp = DispatchTime.now().uptimeNanoseconds
                 DispatchQueue.main.async { [self] in
                     state = .idle
                     guard !text.isEmpty else { NSSound.beep(); return }   // no speech detected
                     lastTranscript = text
                     transcriptItem.title = "Last: " + (text.count > 50 ? String(text.prefix(50)) + "…" : text)
                     inserter.insert(text)
+                    let tPaste = DispatchTime.now().uptimeNanoseconds
+                    let ms = { (a: UInt64, b: UInt64) in (b - a) / 1_000_000 }
+                    let audio = Double(max(wav.count - 44, 0)) / 32000   // 16 kHz mono Int16
+                    log("timing release->send=\(ms(tRelease, tSend))ms request=\(ms(tSend, tResp))ms paste=\(ms(tResp, tPaste))ms total=\(ms(tRelease, tPaste))ms audio=\(String(format: "%.1f", audio))s")
                 }
             } catch {
                 log("transcribe failed: \(error.localizedDescription)")
