@@ -254,7 +254,11 @@ def parse_edits(s):
 
 
 def apply_edits(raw, edits):
-    """Apply [find, replace] pairs to raw. Every find must occur exactly once, spans must not overlap,
+    return _apply(raw, edits)[0]
+
+
+def _apply(raw, edits):
+    """Return (text, output offsets where each applied span starts). Apply [find, replace] pairs to raw. Every find must occur exactly once, spans must not overlap,
     and sizes are bounded (which also rules out a full rewrite or translation)."""
     if len(edits) > MAX_EDITS:
         raise EditError("too many edits")
@@ -279,22 +283,32 @@ def apply_edits(raw, edits):
     for a, b in zip(spans, spans[1:]):
         if b[0] < a[1]:
             raise EditError("overlapping edits")
-    out, pos = [], 0
+    out, pos, starts, n = [], 0, [], 0
     for i, j, rep in spans:
         out += [raw[pos:i], rep]
+        n += (i - pos)
+        starts.append(n)
+        n += len(rep)
         pos = j
     out.append(raw[pos:])
-    return "".join(out)
+    return "".join(out), starts
 
 
-def _tidy(s):
-    """Deterministic clean-up of what deletions leave behind, plus sentence capitals and a final full stop."""
-    s = re.sub(r"\s+", " ", s).strip()
-    s = re.sub(r"\s+([,.;:!?])", r"\1", s)
-    s = re.sub(r"([,;:])(?:\s*[,;:])+", r"\1", s)       # ", ," -> ","
-    s = re.sub(r",\s*([.!?])", r"\1", s)                 # ",." -> "."
+def _tidy(s, starts=()):
+    """Deterministic clean-up of what deletions leave behind. Capitals only at the start of the text and where an
+    applied edit span begins right after a sentence end; a final full stop. Leaves everything else (".NET", "p.m.",
+    newlines) as Haiku was told to leave it."""
+    for k in sorted(starts, reverse=True):          # capitalise at edit spans first, so offsets are still valid
+        if not s[:k].rstrip(" \t").endswith((".", "!", "?")):
+            continue
+        m = re.compile(r"[ \t]*([^\W\d_])").match(s, k)
+        if m and m.group(1).islower():
+            s = s[:m.start(1)] + m.group(1).upper() + s[m.end(1):]
+    s = re.sub(r"[ \t]+", " ", s).strip()
+    s = re.sub(r" ([,;:!?]|\.(?=\s|$))", r"\1", s)
+    s = re.sub(r"([,;:])(?:[ \t]*[,;:])+", r"\1", s)    # ", ," -> ","
+    s = re.sub(r",[ \t]*([.!?])", r"\1", s)             # ",." -> "."
     s = re.sub(r"^[\s,;:.]+", "", s)
-    s = re.sub(r"([.!?]\s+)([^\W\d_]+)", lambda m: m.group(1) + (m.group(2).capitalize() if m.group(2).islower() else m.group(2)), s)
     m = re.match(r"[^\W\d_]+", s)
     if m and m.group(0).islower():
         s = m.group(0).capitalize() + s[m.end():]
@@ -335,7 +349,7 @@ def clean(text, provider=None, call=None, d=None, mode_=None):
         if mode_ == "edits":
             reply = fn(text)
             try:
-                out = _tidy(apply_edits(text, parse_edits(reply)))
+                out = _tidy(*_apply(text, parse_edits(reply)))
             except EditError as e:
                 print(f"cleanup: provider={provider} mode=edits edits rejected ({e}); using raw", file=sys.stderr)
                 return text, provider, True, ms()

@@ -134,3 +134,20 @@ def test_rewrite_request_identical_to_main(monkeypatch):
 
 def test_rewrite_mode_unchanged_with_fake():
     assert clean("hum tipo isto é um teste", "fake", call=lambda t: "Isto é um teste.", mode_="rewrite")[0] == "Isto é um teste."
+
+
+@pytest.mark.parametrize("raw", [
+    "Uso o .NET e o Node.js",
+    "Abre o .env e o .py",
+    "Marcámos às 3 p.m. tomorrow",
+    "Falei com o Dr. silva",
+    "Primeira linha.\nSegunda linha.",
+])
+def test_tidy_leaves_correct_text_alone_on_empty_edits(raw):
+    out = run("[]", raw)[0]
+    assert out.rstrip(".") == raw[0].upper() + raw[1:].rstrip(".")
+
+
+def test_capital_after_sentence_end_only_at_edit_span():
+    out = run('[["Hum, ",""]]', "Fecha a porta. Hum, abre a janela p.m. agora")[0]
+    assert out == "Fecha a porta. Abre a janela p.m. agora."

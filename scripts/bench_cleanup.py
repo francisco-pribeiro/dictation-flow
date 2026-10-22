@@ -205,9 +205,24 @@ def report():
                   "all_runs_fell_back_long": sum(c["fell_back"] for i in long_ids for c in cells[m][i]),
                   "all_runs_long": sum(len(cells[m][i]) for i in long_ids),
                   "mean_out_tok_long": statistics.mean(c["out_tok"] for i in long_ids for c in cells[m][i]) if not self_store.fake else None}
-    rw, ed = res["rewrite"]["median_of_medians_long_ms"], res["edits"]["median_of_medians_long_ms"]
-    res["reduction_pct_long"] = round(100 * (rw - ed) / rw, 1) if rw else None
-    res["latency_ratio"] = round(ed / rw, 3) if rw else None
+    # primary figure: per-text paired ratio edits/rewrite (each text against itself), median and IQR over texts
+    def paired(skip_fallbacks):
+        out = []
+        for i in long_ids:
+            rw_ms = [c["ms"] for c in cells["rewrite"][i]]
+            ed_ms = [c["ms"] for c in cells["edits"][i] if not (skip_fallbacks and c["fell_back"])]
+            if rw_ms and ed_ms:
+                out.append(med(ed_ms) / med(rw_ms))
+        return out
+    for key, skip in (("paired_ratio_long", False), ("paired_ratio_long_no_fallback", True)):
+        r = paired(skip)
+        if r:
+            q = statistics.quantiles(r, n=4, method="inclusive") if len(r) > 1 else [r[0], r[0], r[0]]
+            res[key] = {"n": len(r), "median": round(med(r), 3), "iqr": [round(q[0], 3), round(q[2], 3)],
+                        "reduction_pct": round(100 * (1 - med(r)), 1)}
+    if "paired_ratio_long" in res:
+        res["latency_ratio"] = res["paired_ratio_long"]["median"]
+        res["reduction_pct_long"] = res["paired_ratio_long"]["reduction_pct"]
     # per output-token bucket
     buckets = {}
     for m in cells:

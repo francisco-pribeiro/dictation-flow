@@ -372,4 +372,12 @@ uv run python scripts/bench_cleanup.py sweep
 uv run python scripts/bench_cleanup.py report   # tables + JSON from the cache, 0 calls
 ```
 
-Result on the M4 (2026-10-22): edits was 2.9% faster on texts over 150 chars (836 ms vs 861 ms median of per-text medians, n=9), with 9 of 27 long-text runs falling back to raw. Haiku latency is about 457 ms fixed plus about 6.7 ms per output token; input size barely matters (about 9 ms per 100 input tokens). Edits cut output tokens only from 55 to 36 on average, because each JSON pair costs 8-15 tokens.
+Result on the M4 (2026-10-22): paired per text (edits/rewrite, n=9 texts over 150 chars), the median ratio is 0.90 (10.1% lower, IQR 0.78-0.97); counting only edits runs that did not fall back it is 0.90 (n=6 texts). 9 of 27 long-text runs fell back to raw, so the saving is not usable on those. Haiku latency is about 457 ms fixed plus about 6.7 ms per output token; input size barely matters (about 9 ms per 100 input tokens). Edits cut output tokens only from 55 to 36 on average, because each JSON pair costs 8-15 tokens.
+
+### A/B on your own voice (manual)
+
+`timings.log` has no `mode=` field; the mode appears only on the worker's request line in stderr. So:
+
+1. Quit the main DictFlow first and check `lsof -iTCP:8765 -sTCP:LISTEN` prints nothing. Otherwise the new build reuses the running worker (rewrite only) and both arms measure rewrite.
+2. Set `DICTFLOW_CLEANUP_MODE=edits` in the environment, not in `.env` (in a worktree `.env` is a symlink to the main repo's file): `open --env DICTFLOW_CLEANUP_MODE=edits --stderr /tmp/dictflow.log build/DictFlow.app`. Quit and relaunch without it for the rewrite arm.
+3. Compare the `cleanup=` and `mode=` fields on the worker lines in `/tmp/dictflow.log`, not `timings.log`.
