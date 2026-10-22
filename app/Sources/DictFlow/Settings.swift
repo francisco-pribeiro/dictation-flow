@@ -36,12 +36,28 @@ enum Hotkeys {
 
     enum CaptureResult: Equatable { case none, captured(HotkeyKey), cancelled }
 
-    /// Decides what a key event means while recording a new hotkey. Modifier-only: a modifier key going down
-    /// (its flag set) is captured; Esc cancels; everything else is ignored.
-    static func capture(isKeyDown: Bool, keyCode: Int64, flags: UInt64) -> CaptureResult {
-        if isKeyDown { return keyCode == escKeyCode ? .cancelled : .none }
-        guard let k = key(forKeyCode: keyCode), flags & k.flag != 0 else { return .none }
-        return .captured(k)
+    static let modifierBits: UInt64 = 0x100000 | 0x40000 | 0x80000 | 0x20000 | 0x800000
+}
+
+/// Stateful capture of a new push-to-talk key: only a clean tap counts (modifier down, then up, with no other
+/// key, click or modifier in between), so Cmd+Tab, Shift+letter or Cmd+click never rebind it. Esc cancels.
+struct HotkeyCapturer {
+    private var pending: HotkeyKey?
+
+    mutating func interrupt() { pending = nil }
+
+    mutating func feed(isKeyDown: Bool, keyCode: Int64, flags: UInt64) -> Hotkeys.CaptureResult {
+        if isKeyDown {
+            pending = nil
+            return keyCode == Hotkeys.escKeyCode ? .cancelled : .none
+        }
+        guard let k = Hotkeys.key(forKeyCode: keyCode) else { pending = nil; return .none }
+        if flags & k.flag != 0 {
+            pending = (flags & Hotkeys.modifierBits == k.flag && pending == nil) ? k : nil
+            return .none
+        }
+        defer { pending = nil }
+        return pending == k ? .captured(k) : .none
     }
 }
 
@@ -115,12 +131,23 @@ struct Settings {
         check(Set(Hotkeys.all.map(\.keyCode)).count == Hotkeys.all.count, "unique key codes")
         check(Set(Hotkeys.all.map(\.name)).count == Hotkeys.all.count, "unique names")
 
-        // capture state machine
-        check(Hotkeys.capture(isKeyDown: true, keyCode: 53, flags: 0) == .cancelled, "esc cancels")
-        check(Hotkeys.capture(isKeyDown: true, keyCode: 12, flags: 0) == .none, "letter ignored")
-        check(Hotkeys.capture(isKeyDown: false, keyCode: 62, flags: 0x40000) == .captured(Hotkeys.key(named: "rightctrl")!), "right ctrl press captured")
-        check(Hotkeys.capture(isKeyDown: false, keyCode: 62, flags: 0) == .none, "release ignored")
-        check(Hotkeys.capture(isKeyDown: false, keyCode: 57, flags: 0x10000) == .none, "caps lock not a hotkey")
+        // capture: only a clean modifier tap is accepted
+        func run(_ evs: [(Bool, Int64, UInt64)]) -> Hotkeys.CaptureResult {
+            var c = HotkeyCapturer(); var r = Hotkeys.CaptureResult.none
+            for e in evs { r = c.feed(isKeyDown: e.0, keyCode: e.1, flags: e.2); if r != .none { return r } }
+            return r
+        }
+        check(run([(true, 53, 0)]) == .cancelled, "esc cancels")
+        check(run([(true, 12, 0)]) == .none, "letter ignored")
+        check(run([(false, 62, 0x40000), (false, 62, 0)]) == .captured(Hotkeys.key(named: "rightctrl")!), "right ctrl tap captured")
+        check(run([(false, 62, 0)]) == .none, "lone release ignored")
+        check(run([(false, 57, 0x10000), (false, 57, 0)]) == .none, "caps lock not a hotkey")
+        check(run([(false, 55, 0x100000), (true, 8, 0x100000), (false, 55, 0)]) == .none, "cmd down, C, cmd up gives none")
+        check(run([(false, 56, 0x20000), (false, 56, 0)]) == .captured(Hotkeys.key(named: "leftshift")!), "lshift tap captured")
+        check(run([(false, 60, 0x20000), (false, 60, 0)]) == .captured(Hotkeys.key(named: "rightshift")!), "rshift tap captured")
+        check(run([(false, 55, 0x100000), (false, 56, 0x120000), (false, 56, 0x100000), (false, 55, 0)]) == .none, "two modifiers is a chord")
+        var ci = HotkeyCapturer(); _ = ci.feed(isKeyDown: false, keyCode: 55, flags: 0x100000); ci.interrupt()
+        check(ci.feed(isKeyDown: false, keyCode: 55, flags: 0) == .none, "mouse click interrupts")
         return ok
     }
 }

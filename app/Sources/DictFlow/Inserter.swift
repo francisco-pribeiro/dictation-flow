@@ -56,6 +56,18 @@ final class Inserter {
     /// Called with a short reason when the text was left on the clipboard instead of pasted.
     var onFallback: (String) -> Void = { _ in }
 
+    /// The clipboard as it was before the first still-pending insert, so a second insert within 1 s
+    /// does not mistake our own transcript for the user's clipboard.
+    private var pending: (snap: Snapshot, count: Int)?
+
+    /// Writes the text, keeping the first snapshot while an earlier insert's restore is still pending.
+    func stage(_ text: String) -> (snap: Snapshot, count: Int) {
+        let snap = pending?.snap ?? snapshot()
+        let count = write(text)
+        pending = (snap, count)
+        return (snap, count)
+    }
+
     /// Snapshot, write, paste, then restore after 1 s if nobody else touched the clipboard.
     func insert(_ text: String) {
         let reason: String?
@@ -69,11 +81,18 @@ final class Inserter {
             NSSound.beep()
             return
         }
-        let snap = snapshot()
-        let count = write(text)
+        let (snap, count) = stage(text)
         pasteFunction()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
+            guard pending?.count == count else { return }   // a newer insert owns the restore
+            pending = nil
             if pb.changeCount == count { restore(snap) }
+        }
+    }
+
+    private func sameItems(_ x: Snapshot, _ y: Snapshot) -> Bool {
+        x.count == y.count && zip(x, y).allSatisfy { a, b in
+            a.count == b.count && Dictionary(uniqueKeysWithValues: a.map { ($0.0, $0.1) }) == Dictionary(uniqueKeysWithValues: b.map { ($0.0, $0.1) })
         }
     }
 
@@ -84,10 +103,13 @@ final class Inserter {
         let count = write(probe)
         let wrote = pb.string(forType: .string) == probe && pb.changeCount == count
         restore(original)
-        let after = snapshot()
-        let same = after.count == original.count && zip(after, original).allSatisfy { a, b in
-            a.count == b.count && Dictionary(uniqueKeysWithValues: a.map { ($0.0, $0.1) }) == Dictionary(uniqueKeysWithValues: b.map { ($0.0, $0.1) })
-        }
-        return wrote && same
+        let same = sameItems(snapshot(), original)
+        // two stages within the restore window must still bring the original back
+        let (snap1, _) = stage("first")
+        let (snap2, c2) = stage("second")
+        let twice = pb.changeCount == c2 && sameItems(snap1, snap2) && sameItems(snap1, original)
+        restore(snap2)
+        pending = nil
+        return wrote && same && twice
     }
 }

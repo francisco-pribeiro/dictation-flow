@@ -33,7 +33,7 @@ struct PasteShortcut: Equatable {
         (Self.mods.filter { modifiers & $0.2 != 0 }.map { $0.1 } + [(keyName ?? "?").uppercased()]).joined(separator: "+")
     }
 
-    /// Needs a known key and at least one of Cmd, Ctrl, Opt (Shift alone would hijack typing).
+    /// Needs a known key and Ctrl or Opt. Cmd alone (or Cmd+Shift) is refused: it would hijack Cmd+V/C/Z/Q system-wide.
     static func parse(_ s: String?) -> PasteShortcut? {
         guard let s, !s.isEmpty else { return nil }
         let parts = s.lowercased().split(separator: "+", omittingEmptySubsequences: false).map(String.init)
@@ -43,7 +43,7 @@ struct PasteShortcut: Equatable {
             guard let flag = mods.first(where: { $0.0 == p })?.2, m & flag == 0 else { return nil }
             m |= flag
         }
-        guard m & (cmd | ctrl | opt) != 0 else { return nil }
+        guard m & (ctrl | opt) != 0 else { return nil }
         return PasteShortcut(keyCode: code, modifiers: m)
     }
 
@@ -57,7 +57,7 @@ struct PasteShortcut: Equatable {
     /// What a key-down means while recording a new shortcut: Esc cancels, modifier+letter/digit is captured.
     static func capture(keyCode: Int64, flags: UInt64) -> CaptureResult {
         if keyCode == escKeyCode { return .cancelled }
-        guard keys.values.contains(keyCode), flags & (cmd | ctrl | opt) != 0 else { return .none }
+        guard keys.values.contains(keyCode), flags & (ctrl | opt) != 0 else { return .none }
         return .captured(PasteShortcut(keyCode: keyCode, modifiers: flags & modMask))
     }
 
@@ -69,7 +69,7 @@ struct PasteShortcut: Equatable {
         check(parse(d.name) == d, "name roundtrip")
         check(parse("CMD+Ctrl+Z") == d, "parse ignores case and order")
         for p in presets { check(parse(p.name) == p, "preset roundtrip \(p.name)") }
-        for bad in ["", "z", "cmd", "cmd+", "shift+z", "cmd+cmd+z", "cmd+f12", "foo+z", "cmd+zz"] {
+        for bad in ["", "z", "cmd", "cmd+", "shift+z", "cmd+cmd+z", "cmd+f12", "foo+z", "cmd+zz", "cmd+v", "cmd+c", "cmd+shift+z"] {
             check(parse(bad) == nil, "rejects '\(bad)'")
         }
         check(parse(nil) == nil, "nil")
@@ -87,6 +87,9 @@ struct PasteShortcut: Equatable {
         check(capture(keyCode: 53, flags: 0) == .cancelled, "esc cancels")
         check(capture(keyCode: 9, flags: 0x100000 | 0x80000) == .captured(PasteShortcut(keyCode: 9, modifiers: 0x180000)), "Cmd+Opt+V captured")
         check(capture(keyCode: 9, flags: 0) == .none, "no modifier ignored")
+        check(capture(keyCode: 9, flags: 0x100000) == .none, "Cmd+V not capturable")
+        check(capture(keyCode: 8, flags: 0x100000) == .none, "Cmd+C not capturable")
+        check(capture(keyCode: 6, flags: 0x100000 | 0x20000) == .none, "Cmd+Shift+Z not capturable")
         check(capture(keyCode: 9, flags: 0x20000) == .none, "shift only ignored")
         check(capture(keyCode: 36, flags: 0x100000) == .none, "return key not accepted")
         return ok
@@ -143,6 +146,8 @@ final class PasteShortcutMonitor {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return false
         }
+        // Never act on events this process posted (the synthetic Cmd-V of Inserter would loop).
+        if event.getIntegerValueField(.eventSourceUnixProcessID) == Int64(getpid()) { return false }
         let code = event.getIntegerValueField(.keyboardEventKeycode)
         lock.lock()
         let sc = shortcut, cap = capturing

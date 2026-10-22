@@ -34,15 +34,25 @@ final class HotkeyMonitor {
         DispatchQueue.main.async { self.apply(self.machine.reset()) }
     }
 
-    /// The next modifier-only press becomes the new key (reported via onCaptured); Esc cancels.
-    func beginCapture() { lock.lock(); capturing = true; lock.unlock() }
+    /// Drops a hold in progress (another shortcut took the keys). A latched recording is unaffected. Main queue.
+    func cancelHold() { apply(machine.chord()) }
+
+    /// The next clean modifier-only tap becomes the new key (reported via onCaptured); Esc cancels.
+    func beginCapture() { lock.lock(); capturing = true; capturer = HotkeyCapturer(); lock.unlock() }
     func endCapture() { lock.lock(); capturing = false; lock.unlock() }
+    private var capturer = HotkeyCapturer()   // guarded by lock
+    private func feedCapture(isKeyDown: Bool, keyCode: Int64, flags: UInt64) -> Hotkeys.CaptureResult {
+        lock.lock(); defer { lock.unlock() }
+        return capturer.feed(isKeyDown: isKeyDown, keyCode: keyCode, flags: flags)
+    }
+    private func breakCapture() { lock.lock(); capturer.interrupt(); lock.unlock() }
     private var isCapturing: Bool { lock.lock(); defer { lock.unlock() }; return capturing }
 
     /// Returns false when the tap cannot be created (missing Input Monitoring permission).
     func start() -> Bool {
         if thread != nil { return true }
         let events: CGEventMask = (1 << CGEventType.flagsChanged.rawValue) | (1 << CGEventType.keyDown.rawValue)
+            | (1 << CGEventType.leftMouseDown.rawValue) | (1 << CGEventType.rightMouseDown.rawValue) | (1 << CGEventType.otherMouseDown.rawValue)
         let callback: CGEventTapCallBack = { _, type, event, refcon in
             Unmanaged<HotkeyMonitor>.fromOpaque(refcon!).takeUnretainedValue().handle(type, event)
             return Unmanaged.passUnretained(event)
@@ -65,8 +75,9 @@ final class HotkeyMonitor {
     }
 
     private func handle(_ type: CGEventType, _ event: CGEvent) {
-        if isCapturing, type == .keyDown || type == .flagsChanged {
-            switch Hotkeys.capture(isKeyDown: type == .keyDown, keyCode: event.getIntegerValueField(.keyboardEventKeycode), flags: event.flags.rawValue) {
+        if isCapturing, type == .keyDown || type == .flagsChanged || type.isMouseDown {
+            if type.isMouseDown { breakCapture(); return }
+            switch feedCapture(isKeyDown: type == .keyDown, keyCode: event.getIntegerValueField(.keyboardEventKeycode), flags: event.flags.rawValue) {
             case .captured(let k): endCapture(); DispatchQueue.main.async { self.onCaptured(k) }
             case .cancelled: endCapture(); DispatchQueue.main.async { self.onCaptureCancelled() }
             case .none: break
@@ -80,6 +91,9 @@ final class HotkeyMonitor {
             keyIsDown = false
             DispatchQueue.main.async { self.apply(self.machine.reset()) }
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            // Modifier+click is not a dictation hold.
+            DispatchQueue.main.async { self.apply(self.machine.chord()) }
         case .keyDown:
             let isEsc = event.getIntegerValueField(.keyboardEventKeycode) == Hotkeys.escKeyCode
             DispatchQueue.main.async { self.apply(isEsc ? self.machine.esc() : self.machine.chord()) }
@@ -118,4 +132,8 @@ final class HotkeyMonitor {
             }
         }
     }
+}
+
+private extension CGEventType {
+    var isMouseDown: Bool { self == .leftMouseDown || self == .rightMouseDown || self == .otherMouseDown }
 }

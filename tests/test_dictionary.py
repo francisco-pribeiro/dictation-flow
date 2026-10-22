@@ -134,3 +134,37 @@ def test_shots_do_not_fall_back_with_or_without_dictionary():
     for dd in (Dictionary(), d):
         for raw, out in SHOTS + extra:
             assert clean(raw, "fake", call=lambda t: out, d=dd)[2] is False, raw
+
+
+BIG = ["Vektrum", "Supabase", "Vercel", "Stripe", "GitHub", "deploy", "Pedro", "Luís", "Order2Party", "MiauCare", "n8n",
+       "Next.js", "Prisma", "Docker", "FastAPI", "MongoDB", "WooCommerce", "Haiku", "Parakeet", "Whisper", "Apify",
+       "Idealista", "Cascais"]
+
+
+def test_guard_rejects_answers_built_from_dictionary_words():
+    d = Dictionary(BIG)
+    cases = [
+        ("pergunta ao claude como configurar o stripe connect",
+         "Para configurar o Stripe Connect, liga o Stripe ao Supabase e faz deploy na Vercel."),
+        ("diz ao luís que o deploy falhou na order to party",
+         "Diz ao Luís que o deploy falhou; o GitHub, o Supabase e o Stripe estão bem. Tudo certo com a Vercel."),
+    ]
+    for raw, out in cases:
+        assert clean(raw, "fake", call=lambda t, o=out: o, d=d)[2] is True, out
+    assert clean("usa o super base com a vercel", "fake", call=lambda t: "Usa o Supabase com a Vercel.", d=d)[2] is False
+    assert clean("hum usei o super base para a order to party", "fake",
+                 call=lambda t: "Usei o Supabase para a Order2Party.", d=d)[2] is False
+
+
+def test_parse_line_trailing_comment():
+    d = Dictionary(["Supabase   # canonical spelling",
+                    "super base | superbase -> Supabase   # replacement; several wrongs may map to one Right",
+                    "C#", "F# -> F Sharp"])
+    assert d.terms == ["Supabase", "C#"]
+    assert d.apply("usei o super base hoje") == "usei o Supabase hoje"
+    assert d.apply("F# agora") == "F Sharp agora"
+
+
+def test_apply_never_raises_on_case_folding_mismatch():
+    d = Dictionary(["istanbul -> Istambul"])
+    assert d.apply("İstanbul fica longe") in ("İstanbul fica longe", "Istambul fica longe")

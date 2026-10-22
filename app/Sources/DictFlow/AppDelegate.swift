@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     init(projectDir: String) { worker = WorkerClient(projectDir: projectDir) }
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        installEditMenu()
         let menu = NSMenu()
         transcriptItem.target = self
         warningItem.isHidden = true
@@ -90,7 +91,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotkey.onStart = { [weak self] in self?.startRecording() ?? false }
         hotkey.onLatch = { [weak self] in self?.enterLatched() }
         hotkey.isBusy = { [weak self] in self?.state != .idle }
-        pasteMonitor.onFire = { [weak self] in self?.pasteLast(delay: 0) }
+        pasteMonitor.onFire = { [weak self] in
+            self?.hotkey.cancelHold()   // the shortcut may use the push-to-talk modifier: drop that hold first
+            self?.pasteLast(delay: 0, waitForModifiers: true)
+        }
         pasteMonitor.onCaptured = { [weak self] s in self?.capturedPaste(s) }
         pasteMonitor.onCaptureCancelled = { [weak self] in self?.capturingPaste = false; self?.rebuildHotkeyMenu() }
         hotkey.onStop = { [weak self] in self?.stopRecording() }
@@ -111,6 +115,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.global().async { [worker] in
             do { try worker.ensureRunning(); log("worker ready") } catch { log("worker failed: \(error.localizedDescription)") }
         }
+    }
+
+    /// An accessory app never shows its main menu, but it still routes these key equivalents, so Cmd+V/C/X/A/Z
+    /// work in the dictionary dialog's text field.
+    private func installEditMenu() {
+        let main = NSMenu()
+        let appItem = NSMenuItem(); appItem.submenu = NSMenu()
+        main.addItem(appItem)
+        let editItem = NSMenuItem(); let edit = NSMenu(title: "Editar")
+        for (title, sel, key, mods) in [("Anular", "undo:", "z", NSEvent.ModifierFlags.command), ("Refazer", "redo:", "z", [.command, .shift]),
+                                        ("Cortar", "cut:", "x", .command), ("Copiar", "copy:", "c", .command),
+                                        ("Colar", "paste:", "v", .command), ("Selecionar tudo", "selectAll:", "a", .command)] {
+            let mi = NSMenuItem(title: title, action: Selector(sel), keyEquivalent: key)
+            mi.keyEquivalentModifierMask = mods
+            edit.addItem(mi)
+        }
+        editItem.submenu = edit
+        main.addItem(editItem)
+        NSApp.mainMenu = main
     }
 
     func applicationWillTerminate(_ n: Notification) { worker.shutdown() }
@@ -340,8 +363,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.addButton(withTitle: "Adicionar")
         alert.addButton(withTitle: "Cancelar")
         alert.window.initialFirstResponder = field
+        let prev = NSWorkspace.shared.frontmostApplication
         NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let resp = alert.runModal()
+        prev?.activate()   // give focus back, or the next paste finds DictFlow frontmost
+        guard resp == .alertFirstButtonReturn else { return }
         let entry = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !entry.isEmpty else { return }
         DispatchQueue.global().async { [self] in
@@ -359,8 +385,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     let a = NSAlert()
                     a.messageText = "Nao foi possivel adicionar"
                     a.informativeText = error.localizedDescription
+                    let prev = NSWorkspace.shared.frontmostApplication
                     NSApp.activate(ignoringOtherApps: true)
                     a.runModal()
+                    prev?.activate()
                 }
             }
         }
@@ -385,10 +413,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func pasteLastFromMenu() { pasteLast(delay: 0.3) }   // let the menu close first
 
     /// Re-pastes the last final text (memory only) through the normal clipboard-restore paste path.
-    private func pasteLast(delay: TimeInterval) {
+    /// `waitForModifiers`: the shortcut fires on key-down with Cmd/Ctrl still held, which would turn the
+    /// synthetic Cmd-V into Ctrl+Cmd+V; wait (up to 1 s) until they are released.
+    private func pasteLast(delay: TimeInterval, waitForModifiers: Bool = false) {
         guard !lastTranscript.isEmpty, state == .idle else { NSSound.beep(); return }
         let text = lastTranscript
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [self] in inserter.insert(text) }
+        let deadline = Date().addingTimeInterval(1)
+        func go() {
+            let held = CGEventSource.flagsState(.combinedSessionState).rawValue & PasteShortcut.modMask != 0
+            if waitForModifiers, held, Date() < deadline {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { go() }
+            } else if state == .idle {
+                inserter.insert(text)
+            } else { NSSound.beep() }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { go() }
     }
 
     @objc private func copyTranscript() {

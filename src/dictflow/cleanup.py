@@ -1,4 +1,5 @@
 """Optional LLM cleanup of a transcript. Any failure returns the raw text."""
+import difflib
 import functools
 import json
 import re
@@ -135,25 +136,35 @@ BR_TO_PT = {"fato": "facto", "contato": "contacto", "time": "equipa", "equipe": 
 FILLERS = {"hum", "tipo", "pronto", "entao", "like", "basically", "actually", "know", "yeah"}
 
 
+def _near_miss(rw, w):
+    """Size (1-3) of the raw-word window that sounds like dictionary word `w`, or 0."""
+    for n in (1, 2, 3):
+        for i in range(len(rw) - n + 1):
+            if difflib.SequenceMatcher(None, "".join(rw[i:i + n]), w).ratio() >= 0.75:
+                return n
+    return 0
+
+
 def _preserves_content(raw, out, d=None):
     """Cleanup only removes fillers and fixes punctuation, so the words must mostly survive.
-    Words the dictionary vouches for may appear in the output, and a word it rewrites counts as kept."""
+    A dictionary word new in the output counts only as a near-miss fix of 1-3 raw words (super base ->
+    Supabase), never as free vocabulary; a word the dictionary rewrites counts as kept."""
     rw, ow = _words(raw), _words(out)
     if not ow:
         return False
     rs = set(rw) | {BR_TO_PT[w] for w in rw if w in BR_TO_PT}
     os_ = set(ow) | {br for br, pt in BR_TO_PT.items() if pt in ow}
+    credit = {}   # dictionary word new in the output -> raw words it replaces
     if d:
-        rs |= d.vocab()
+        vocab = d.vocab()
+        credit = {w: n for w in set(ow) if w in vocab and w not in rw and (n := _near_miss(rw, w))}
+        rs |= set(credit)
         os_ |= {w for w, rights in d.wrong_to_right().items() if rights <= set(ow)}
     if sum(w in rs for w in ow) < 0.6 * len(ow):
         return False
     long = [w for w in rw if len(w) > 3 and w not in FILLERS]
     kept = sum(w in os_ for w in long)
-    if d:
-        # a canonical term new in the output may stand in for a few misheard raw words (at most 3 each)
-        new = sum(w in d.vocab() and w not in rw for w in ow)
-        kept += min(len(long) - kept, 3 * new)
+    kept += min(len(long) - kept, sum(credit.values()))
     return not long or kept >= 0.5 * len(long)
 
 

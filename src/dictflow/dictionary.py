@@ -1,6 +1,6 @@
 """Personal dictionary: canonical terms and 'wrong -> Right' replacements.
 
-File format, one entry per line, '#' starts a comment:
+File format, one entry per line, '#' starts a comment (at line start, or after whitespace):
     Supabase                      canonical spelling (vocabulary)
     super base -> Supabase        replacement; 'a | b -> Right' maps several wrongs
 Local only. A missing or malformed file never raises: bad lines are skipped.
@@ -37,6 +37,9 @@ def parse_line(line):
     """Return ('term', Term), ('rep', [wrongs], Right) or None for blank, comment or malformed."""
     line = line.strip()
     if not line or line.startswith("#"):
+        return None
+    line = re.sub(r"\s+#.*$", "", line).strip()  # trailing comment; needs whitespace so 'C#' survives
+    if not line:
         return None
     if "->" in line:
         left, right = line.split("->", 1)
@@ -75,7 +78,8 @@ class Dictionary:
         """Case-insensitive, word-boundary, longest-first replacement; the Right form is kept exactly."""
         if not self._rx or not text:
             return text
-        return self._rx.sub(lambda m: self.replacements[_key(m.group(0))][1], text)
+        # re.I and casefold() disagree on a few characters (U+0130, U+0131): keep the match when the lookup misses.
+        return self._rx.sub(lambda m: (self.replacements.get(_key(m.group(0))) or (None, m.group(0)))[1], text)
 
     def vocab(self):
         """Accent-free lowercase words the dictionary vouches for (for the content guard)."""

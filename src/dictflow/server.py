@@ -50,7 +50,10 @@ class Worker:
                 raw, _ = self.engine.transcribe(samples, audio.SR, lang or config.lang(),
                                                 dictionary.asr_prompt(config.prompt(), d))
             timings["asr"] = _ms(t)
-        raw = d.apply(raw)
+        try:
+            raw = d.apply(raw)
+        except Exception:
+            pass  # a dictionary bug must never drop a dictation
         text, prov, fell_back = raw, "none", False
         if do_cleanup and raw:
             text, prov, fell_back, timings["cleanup"] = cleanup.clean(raw, self.provider, d=d)
