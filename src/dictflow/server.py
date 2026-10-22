@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from . import asr, audio, cleanup, config
+from . import asr, audio, cleanup, config, dictionary
 
 MAX_BODY = 20 * 1024 * 1024
 
@@ -43,14 +43,17 @@ class Worker:
             samples = audio.trim_silence(audio.load_audio(f.name, fmt="wav"))
             timings["decode"] = _ms(t)
         raw = ""
+        d = dictionary.current()  # re-read only when the file changed
         if len(samples):
             t = time.perf_counter()
             with self.lock:
-                raw, _ = self.engine.transcribe(samples, audio.SR, lang or config.lang(), config.prompt())
+                raw, _ = self.engine.transcribe(samples, audio.SR, lang or config.lang(),
+                                                dictionary.asr_prompt(config.prompt(), d))
             timings["asr"] = _ms(t)
+        raw = d.apply(raw)
         text, prov, fell_back = raw, "none", False
         if do_cleanup and raw:
-            text, prov, fell_back, timings["cleanup"] = cleanup.clean(raw, self.provider)
+            text, prov, fell_back, timings["cleanup"] = cleanup.clean(raw, self.provider, d=d)
         timings["total"] = _ms(t_all)
         return {"raw": raw, "text": text, "cleanup_provider": prov, "fell_back": fell_back, "timings_ms": timings}
 

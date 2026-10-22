@@ -103,6 +103,7 @@ Every variable is optional. With none set, the app uses local Parakeet, no clean
 |---|---|---|
 | `DICTFLOW_ENGINE` | `parakeet` | ASR engine: `parakeet` (local, auto language), `whisper` (local, honours `DICTFLOW_LANG` and `DICTFLOW_PROMPT`), `groq` (cloud, needs `GROQ_API_KEY`) |
 | `DICTFLOW_LANG` | `auto` | `auto`, `pt` or `en`. Only `whisper` and `groq` use it |
+| `DICTFLOW_DICTIONARY` | `~/Library/Application Support/DictFlow/dictionary.txt` | Personal dictionary file (see Dictionary) |
 | `DICTFLOW_PROMPT` | empty | Vocabulary hint for `whisper`/`groq`, e.g. `Vektrum, Order2Party, Supabase` |
 | `DICTFLOW_CLEANUP` | `none` | Cleanup provider: `anthropic`, `openai` (any OpenAI-compatible endpoint) or `none`. Explicit opt-in: a key alone does not enable cleanup |
 | `DICTFLOW_LLM_BASE_URL` | empty | Base URL for the `openai` provider, e.g. `http://localhost:11434/v1`. Required for `openai` |
@@ -143,6 +144,26 @@ DICTFLOW_LLM_MODEL=qwen2.5:3b
 ```
 
 No cleanup: leave `DICTFLOW_CLEANUP` empty (or `none`). Restart the app after changing `.env`.
+
+## Dictionary
+
+A local file of your vocabulary, one entry per line, `#` for comments:
+
+```
+Supabase                         # canonical spelling
+super base | superbase -> Supabase   # replacement; several wrongs may map to one Right
+order to party -> Order2Party
+```
+
+Manage it with `uv run dictflow dict add "wrong -> Right"` (or `add "Term"`), `dict list`, `dict remove <text>` (a whole line, a term, a Right form, or one wrong form) and `dict path`. Adding dedupes (case-insensitive); a new Right for an existing wrong replaces it. You can also edit the file by hand; the worker re-reads it when its mtime changes, so no restart is needed. A missing or malformed file never breaks dictation: bad lines are skipped.
+
+Where it is used:
+
+1. After the ASR, `wrong -> Right` entries are applied deterministically: case-insensitive, whole words, longest match first, with the Right form kept exactly.
+2. In the cleanup prompt (`anthropic`/`openai`), as a delimited, escaped list marked as vocabulary and never as instructions (max 150 entries / 3000 characters). The content guardrail accepts dictionary words in the output.
+3. For `whisper`/`groq`, terms and Right forms are appended to `DICTFLOW_PROMPT` (at most 500 characters, `DICTFLOW_PROMPT` first).
+
+The file is local only. It is sent nowhere except, when cleanup is enabled, as part of the cleanup request to your configured provider. Plain `Term` entries are not forced onto the raw transcript without cleanup; use `wrong -> Right` for that.
 
 ## Signing
 

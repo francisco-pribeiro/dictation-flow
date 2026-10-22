@@ -2,7 +2,7 @@ import argparse
 import sys
 import time
 
-from . import config
+from . import config, dictionary
 
 
 def _ms(t0):
@@ -30,8 +30,9 @@ def cmd_transcribe(args):
         eng.load()
         timings["load"] = _ms(t)
         t = time.perf_counter()
-        text, detected = eng.transcribe(samples, audio.SR, lang, config.prompt())
+        text, detected = eng.transcribe(samples, audio.SR, lang, dictionary.asr_prompt(config.prompt()))
         timings["asr"] = _ms(t)
+    text = dictionary.current().apply(text)
     raw = text
     if args.cleanup and text:
         from . import cleanup
@@ -50,9 +51,35 @@ def cmd_transcribe(args):
 def cmd_clean(args):
     from . import cleanup
 
-    text, prov, fb, ms = cleanup.clean(args.text, args.provider)
+    text, prov, fb, ms = cleanup.clean(dictionary.current().apply(args.text), args.provider)
     print(text)
     print(f"cleanup: provider={prov} fell_back={fb} ms={ms}", file=sys.stderr)
+    return 0
+
+
+def cmd_dict(args):
+    if args.dict_cmd == "path":
+        print(dictionary.path())
+    elif args.dict_cmd == "list":
+        for e in dictionary.entries():
+            print(e)
+    elif args.dict_cmd == "add":
+        try:
+            print(dictionary.add(args.entry))
+        except ValueError as e:
+            print(f"dictflow: error: {e}", file=sys.stderr)
+            return 1
+        except OSError as e:
+            print(f"dictflow: error: {e}", file=sys.stderr)
+            return 1
+    elif args.dict_cmd == "remove":
+        try:
+            n = dictionary.remove(args.text)
+        except OSError as e:
+            print(f"dictflow: error: {e}", file=sys.stderr)
+            return 1
+        print(f"removed {n}")
+        return 0 if n else 1
     return 0
 
 
@@ -69,6 +96,11 @@ def main(argv=None):
     c = sub.add_parser("clean", help="run LLM cleanup on text")
     c.add_argument("text")
     c.add_argument("--provider", choices=["anthropic", "openai", "none"])
+    d = sub.add_parser("dict", help="manage the personal dictionary").add_subparsers(dest="dict_cmd", required=True)
+    d.add_parser("add", help="add 'Term' or 'wrong -> Right'").add_argument("entry")
+    d.add_parser("list", help="print the entries")
+    d.add_parser("remove", help="remove an entry by line, term or wrong form").add_argument("text")
+    d.add_parser("path", help="print the dictionary file path")
     s = sub.add_parser("serve", help="run the localhost worker")
     s.add_argument("--port", type=int)
     b = sub.add_parser("bench", help="benchmark engines on clips with .txt references")
@@ -89,6 +121,8 @@ def main(argv=None):
             return 1
     if args.cmd == "clean":
         return cmd_clean(args)
+    if args.cmd == "dict":
+        return cmd_dict(args)
     if args.cmd == "serve":
         from . import server
 
