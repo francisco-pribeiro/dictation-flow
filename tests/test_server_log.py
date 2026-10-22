@@ -23,5 +23,5 @@ def test_timing_suffix_has_no_text():
     res = {"text": "segredo", "raw": "segredo cru", "fell_back": True,
            "timings_ms": {"decode": 5, "asr": 200, "cleanup": 300, "total": 510}}
     line = server.timing_suffix(2.0, res)
-    assert line == " decode=5ms asr=200ms cleanup=300ms total=510ms audio=2.0s chars=7 fell_back=true"
+    assert line == " decode=5ms asr=200ms cleanup=300ms total=510ms audio=2.0s chars=7 fell_back=true mode=rewrite"
     assert "segredo" not in line

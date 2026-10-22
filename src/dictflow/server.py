@@ -34,7 +34,8 @@ def timing_suffix(audio_s, res):
     """Latency summary for the request log. Numbers and flags only, never transcript text."""
     t = res["timings_ms"]
     return (f" decode={t['decode']}ms asr={t['asr']}ms cleanup={t['cleanup']}ms total={t['total']}ms"
-            f" audio={audio_s:.1f}s chars={len(res['text'])} fell_back={str(bool(res['fell_back'])).lower()}")
+            f" audio={audio_s:.1f}s chars={len(res['text'])} fell_back={str(bool(res['fell_back'])).lower()}"
+            f" mode={cleanup.mode()}")
 
 
 class Worker:
