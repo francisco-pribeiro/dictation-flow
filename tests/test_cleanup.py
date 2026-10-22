@@ -1,0 +1,48 @@
+from dictflow.cleanup import clean
+
+RAW = "hum tipo isto é um teste"
+
+
+def run(out):
+    return clean(RAW, "fake", call=lambda t: out)
+
+
+def boom(_):
+    raise TimeoutError("timed out")
+
+
+def test_good_output():
+    text, prov, fb, _ = run("Isto é um teste.")
+    assert (text, prov, fb) == ("Isto é um teste.", "fake", False)
+
+
+def test_refusal_falls_back():
+    for r in ("Here is the cleaned text: Isto é um teste.", "Aqui está: Isto", "Sure! Isto", "Desculpe, não posso", "As an AI model"):
+        assert run(r)[0::2] == (RAW, True)
+
+
+def test_too_long_falls_back():
+    assert run("x" * 200)[0::2] == (RAW, True)
+
+
+def test_empty_falls_back():
+    assert run("  ")[0::2] == (RAW, True)
+
+
+def test_exception_falls_back():
+    text, _, fb, _ = clean(RAW, "fake", call=boom)
+    assert (text, fb) == (RAW, True)
+
+
+def test_tag_and_quote_stripping():
+    assert run('"<cleaned>Isto é um teste.</cleaned>"')[0] == "Isto é um teste."
+    assert run("<transcript>Isto é um teste.</transcript>")[0] == "Isto é um teste."
+
+
+def test_none_provider_and_empty_input():
+    assert clean(RAW, "none")[:3] == (RAW, "none", False)
+    assert clean("", "fake", call=boom)[2] is False
+
+
+def test_legit_leading_claro_kept():
+    assert clean("claro que sim", "fake", call=lambda t: "Claro que sim.")[2] is False

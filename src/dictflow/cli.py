@@ -32,11 +32,27 @@ def cmd_transcribe(args):
         t = time.perf_counter()
         text, detected = eng.transcribe(samples, audio.SR, lang, config.prompt())
         timings["asr"] = _ms(t)
+    raw = text
+    if args.cleanup and text:
+        from . import cleanup
+
+        text, prov, fb, cms = cleanup.clean(text)
+        timings["cleanup"] = cms
+        print(f"cleanup: provider={prov} fell_back={fb}", file=sys.stderr)
     if args.json:
-        print(json.dumps({"text": text, "lang": detected, "timings_ms": timings}, ensure_ascii=False))
+        print(json.dumps({"raw": raw, "text": text, "lang": detected, "timings_ms": timings}, ensure_ascii=False))
     else:
         print(text)
     print("timings_ms: " + " ".join(f"{k}={v}" for k, v in timings.items()), file=sys.stderr)
+    return 0
+
+
+def cmd_clean(args):
+    from . import cleanup
+
+    text, prov, fb, ms = cleanup.clean(args.text, args.provider)
+    print(text)
+    print(f"cleanup: provider={prov} fell_back={fb} ms={ms}", file=sys.stderr)
     return 0
 
 
@@ -49,7 +65,10 @@ def main(argv=None):
     t.add_argument("--engine", choices=["parakeet", "whisper", "groq"])
     t.add_argument("--lang", choices=["auto", "pt", "en"])
     t.add_argument("--json", action="store_true")
-    sub.add_parser("clean", help="run LLM cleanup on text")
+    t.add_argument("--cleanup", action="store_true", help="run the LLM cleanup pass")
+    c = sub.add_parser("clean", help="run LLM cleanup on text")
+    c.add_argument("text")
+    c.add_argument("--provider", choices=["anthropic", "openai", "none"])
     sub.add_parser("serve", help="run the localhost worker")
     sub.add_parser("bench", help="benchmark engines on fixtures")
     args = p.parse_args(argv)
@@ -62,6 +81,8 @@ def main(argv=None):
         except (RuntimeError, ValueError, OSError) as e:
             print(f"dictflow: error: {e}", file=sys.stderr)
             return 1
+    if args.cmd == "clean":
+        return cmd_clean(args)
     print(f"{args.cmd}: not implemented yet")
     return 1
 
