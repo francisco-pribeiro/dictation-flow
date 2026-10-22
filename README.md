@@ -91,6 +91,10 @@ To change the hotkey, use the menu: **Atalho** lists the presets (Option direito
 open --env DICTFLOW_HOTKEY=rightcmd build/DictFlow.app      # or fn, rightctrl, rightoption (default)
 ```
 
+**Hands-free:** tap the key twice quickly (second press within 400 ms of the first release, both presses shorter than 250 ms) and recording latches: the icon turns `◉` and a short sound plays. Let go and keep talking; the next single press stops and transcribes, Esc cancels without pasting. The 120 s cap still applies. Holding the key works as before. The logic is `HotkeyMachine` (`app/Sources/DictFlow/HotkeyMachine.swift`).
+
+**Paste last transcript:** **Cmd+Ctrl+Z** (default; shown as Ctrl+Cmd+Z in the menu) re-pastes the last final text (after dictionary and cleanup) at the cursor, and the focused app does not see the keystroke. The text is kept in memory only, never on disk, and is lost when the app quits. Menu items **Colar ultima transcricao** and **Copiar ultima transcricao** do the same from the menu. With nothing dictated yet, or while recording or transcribing, you only get a beep. Change the shortcut under **Atalho > Colar ultima transcricao** (presets, or **Gravar novo atalho de colar...**: press modifiers plus a letter or digit, at least one of Cmd, Ctrl, Opt; Esc cancels). Saved as `"pasteShortcut"` (e.g. `"ctrl+cmd+z"`) in `settings.json`. It uses its own event tap, which needs Accessibility; if that tap fails, only this shortcut is off (the header shows "inativo") and dictation keeps working. Note this shortcut shadows Cmd+Ctrl+Z in every app.
+
 Do not start the binary inside `Contents/MacOS` from a terminal for real use: macOS then charges Microphone, Accessibility and Input Monitoring to the terminal, not to DictFlow.
 
 To start at login: System Settings > General > Login Items > add `DictFlow.app`.
@@ -213,6 +217,8 @@ build/DictFlow.app/Contents/MacOS/DictFlow --convert tests/fixtures/pt_facto.wav
 build/DictFlow.app/Contents/MacOS/DictFlow --pipeline-test tests/fixtures/pt_facto.wav          # spawns the worker, transcribes, stops it
 build/DictFlow.app/Contents/MacOS/DictFlow --clipboard-test                                     # clipboard snapshot and restore; prints PASS
 build/DictFlow.app/Contents/MacOS/DictFlow --settings-test                                      # settings.json load/save, corrupt file, precedence, hotkey capture logic; prints PASS
+build/DictFlow.app/Contents/MacOS/DictFlow --hotkey-test                                        # hold/tap/double-tap/triple-tap/busy/Esc state machine; prints PASS
+build/DictFlow.app/Contents/MacOS/DictFlow --shortcut-test                                      # paste shortcut parsing, matching, capture; prints PASS
 ```
 
 `--check-permissions` also exists, but run from a shell it reports the terminal's grants, not DictFlow's. Use the menu's Check permissions (with the `--stderr` log above) for the real state.
@@ -260,7 +266,9 @@ These steps need a GUI and your hands; no automated test covers them. Do them on
 12. **Quit.** Quit from the menu. Success: `lsof -iTCP:8765 -sTCP:LISTEN` prints nothing.
 13. **Atalho menu.** Open the menu-bar menu > Atalho. Success: the title shows the current key, the current preset has a checkmark. Pick Control direito: the checkmark moves, holding right Control now dictates and right Option no longer does, with no restart; `~/Library/Application Support/DictFlow/settings.json` contains `"hotkey": "rightctrl"`. Quit and relaunch: the choice persists (and wins over `DICTFLOW_HOTKEY`).
 14. **Gravar novo atalho.** Atalho > Gravar novo atalho..., press left Shift: the menu shows it checked and it works as the hotkey. Repeat and press Esc: nothing changes. While recording, typing letters does nothing to the choice. Success also requires Input Monitoring (otherwise the item just beeps).
-15. **Wispr Flow.** Do not run Wispr Flow on the same hotkey at the same time. If you switch DictFlow to `fn`, set System Settings > Keyboard > Press Globe key to: Do Nothing.
+15. **Hands-free.** Tap the key twice quickly in a text field. Success: after the second tap the icon is `◉` and you hear a tick; speak with the key released, press once: the text is pasted and the icon returns to `◦`. Repeat and press Esc while `◉`: nothing is pasted, the microphone indicator goes off. A single tap still produces nothing; a slow second tap (over 400 ms later) does not latch; typing in another app while `◉` does not cancel it.
+16. **Paste last transcript.** After a dictation, click elsewhere and press Cmd+Ctrl+Z: the last text is pasted again and the app does not react to the keystroke (no undo). Menu Colar ultima transcricao pastes it; Copiar ultima transcricao puts it on the clipboard. After a fresh launch, the shortcut only beeps. Atalho > Colar ultima transcricao: pick Ctrl+Opt+V, it works and `settings.json` has `"pasteShortcut": "ctrl+opt+v"`; Gravar novo atalho de colar..., press Cmd+Opt+L, it applies and persists; Esc cancels. Cmd+Z alone still undoes.
+17. **Wispr Flow.** Do not run Wispr Flow on the same hotkey at the same time. If you switch DictFlow to `fn`, set System Settings > Keyboard > Press Globe key to: Do Nothing.
 
 ## Known limitations
 
@@ -269,6 +277,7 @@ These steps need a GUI and your hands; no automated test covers them. Do them on
 - The silence check only catches digital silence. With room noise and `whisper` or `groq`, a hold with nothing said can paste invented text such as "Thank you." Parakeet returns nothing in the same case.
 - Secure input: when the frontmost app holds secure input (a password field), DictFlow skips cloud cleanup, does not paste, beeps and leaves the text on the clipboard with no expiry. With `DICTFLOW_ENGINE=groq` the audio is still sent to Groq, and the text shows in the menu's "Last:" item. Secure input held by a background app is ignored.
 - Starting a new dictation while the previous one is still being transcribed is ignored, with no beep.
+- A lone tap still starts and cancels a short recording (so the microphone indicator blinks), because the app cannot know a second tap is coming. Hands-free, the swallowing paste shortcut and the sound/icon feedback depend on macOS permissions and were not verified headless: only the state machine and shortcut parsing are unit-tested.
 - The app waits at most 15 s for the worker. A long dictation with `whisper` or `groq` plus a slow cleanup can exceed that, and the text is dropped with a beep.
 - Two dictations within about 1 s of each other can leave the first dictation's text on the clipboard instead of your original contents.
 - On first launch without the model downloaded (Install step 2), the worker cannot start within the app's 60 s limit.

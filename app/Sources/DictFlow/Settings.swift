@@ -58,6 +58,11 @@ struct Settings {
         set { values["hotkey"] = newValue }
     }
 
+    var pasteShortcut: String? {
+        get { values["pasteShortcut"] as? String }
+        set { values["pasteShortcut"] = newValue }
+    }
+
     /// Missing, unreadable or corrupt file gives empty settings (defaults apply).
     static func load(from url: URL = defaultURL) -> Settings {
         var s = Settings()

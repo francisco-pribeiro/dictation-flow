@@ -35,11 +35,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkeyMenu = NSMenu()
     private let hotkeyItem = NSMenuItem(title: "Atalho", action: nil, keyEquivalent: "")
     private var capturing = false
+    private lazy var pasteMonitor = PasteShortcutMonitor(shortcut: PasteShortcut.resolve(settings: settings))
+    private var pasteOK = false
+    private var capturingPaste = false
+    private var latched = false
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let transcriptItem = NSMenuItem(title: "No transcript yet", action: #selector(copyTranscript), keyEquivalent: "")
     private let warningItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var lastTranscript = ""
-    private var state = State.idle { didSet { refreshTitle() } }
+    private var state = State.idle { didSet { if state != .recording { latched = false }; refreshTitle() } }
     private var tapOK = false
     private var signalSources: [DispatchSourceSignal] = []
 
@@ -55,6 +59,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(transcriptItem)
         menu.addItem(warningItem)
         menu.addItem(check)
+        for (title, sel) in [("Colar ultima transcricao", #selector(pasteLastFromMenu)), ("Copiar ultima transcricao", #selector(copyTranscript))] {
+            let mi = NSMenuItem(title: title, action: sel, keyEquivalent: "")
+            mi.target = self
+            menu.addItem(mi)
+        }
         hotkeyItem.submenu = hotkeyMenu
         menu.addItem(hotkeyItem)
         menu.addItem(.separator())
@@ -65,7 +74,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.warningItem.title = msg
             self?.warningItem.isHidden = false
         }
-        hotkey.onStart = { [weak self] in self?.startRecording() }
+        hotkey.onStart = { [weak self] in self?.startRecording() ?? false }
+        hotkey.onLatch = { [weak self] in self?.enterLatched() }
+        hotkey.isBusy = { [weak self] in self?.state != .idle }
+        pasteMonitor.onFire = { [weak self] in self?.pasteLast(delay: 0) }
+        pasteMonitor.onCaptured = { [weak self] s in self?.capturedPaste(s) }
+        pasteMonitor.onCaptureCancelled = { [weak self] in self?.capturingPaste = false; self?.rebuildHotkeyMenu() }
         hotkey.onStop = { [weak self] in self?.stopRecording() }
         hotkey.onCancel = { [weak self] in self?.cancelRecording() }
         hotkey.onCaptured = { [weak self] k in self?.captured(k) }
@@ -103,6 +117,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !CGPreflightListenEventAccess() { _ = CGRequestListenEventAccess() }
         tapOK = hotkey.start()
         if !tapOK { log("event tap could not be created") }
+        pasteOK = pasteMonitor.start()
+        if !pasteOK { log("paste shortcut tap could not be created (needs Accessibility)") }
         refreshWarning()
         refreshTitle()
     }
@@ -118,6 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let s = Permissions.status()
         log("microphone=\(s.mic) accessibility=\(s.accessibility) input-monitoring=\(s.inputMonitoring)")
         if !tapOK { tapOK = hotkey.start() }
+        if !pasteOK { pasteOK = pasteMonitor.start() }
         refreshWarning()
         refreshTitle()
     }
@@ -144,6 +161,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                              action: capturing ? nil : #selector(recordHotkey), keyEquivalent: "")
         rec.target = self
         hotkeyMenu.addItem(rec)
+
+        // Shortcut that re-pastes the last transcript
+        hotkeyMenu.addItem(.separator())
+        let pasteCur = currentPasteShortcut
+        let header = NSMenuItem(title: "Colar ultima transcricao: \(capturingPaste ? "a gravar..." : pasteCur.label)" + (pasteOK ? "" : " (inativo)"),
+                                action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        hotkeyMenu.addItem(header)
+        var shortcuts = PasteShortcut.presets
+        if !shortcuts.contains(pasteCur) { shortcuts.insert(pasteCur, at: 0) }
+        for sc in shortcuts {
+            let mi = NSMenuItem(title: sc.label, action: #selector(pickPasteShortcut(_:)), keyEquivalent: "")
+            mi.target = self
+            mi.representedObject = sc.name
+            mi.state = sc == pasteCur ? .on : .off
+            hotkeyMenu.addItem(mi)
+        }
+        let recPaste = NSMenuItem(title: capturingPaste ? "A gravar: prima modificador + letra (Esc cancela)" : "Gravar novo atalho de colar...",
+                                  action: capturingPaste ? nil : #selector(recordPasteShortcut), keyEquivalent: "")
+        recPaste.target = self
+        hotkeyMenu.addItem(recPaste)
+    }
+
+    private var currentPasteShortcut: PasteShortcut { PasteShortcut.resolve(settings: settings) }
+
+    private func applyPaste(_ sc: PasteShortcut) {
+        settings.pasteShortcut = sc.name
+        do { try settings.save() } catch { log("could not save settings: \(error.localizedDescription)") }
+        pasteMonitor.setShortcut(sc)
+        rebuildHotkeyMenu()
+    }
+
+    @objc private func pickPasteShortcut(_ sender: NSMenuItem) {
+        guard let sc = PasteShortcut.parse(sender.representedObject as? String) else { return }
+        if capturingPaste { pasteMonitor.endCapture(); capturingPaste = false }
+        applyPaste(sc)
+    }
+
+    @objc private func recordPasteShortcut() {
+        guard pasteOK else { NSSound.beep(); return }
+        if capturing { hotkey.endCapture(); capturing = false }
+        capturingPaste = true
+        pasteMonitor.beginCapture()
+        rebuildHotkeyMenu()
+    }
+
+    private func capturedPaste(_ sc: PasteShortcut) {
+        capturingPaste = false
+        applyPaste(sc)
     }
 
     private func apply(_ k: HotkeyKey) {
@@ -161,6 +227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func recordHotkey() {
         guard tapOK else { NSSound.beep(); return }   // the capture needs the event tap
+        if capturingPaste { pasteMonitor.endCapture(); capturingPaste = false }
         capturing = true
         hotkey.beginCapture()
         rebuildHotkeyMenu()
@@ -174,23 +241,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: flow
 
     private func refreshTitle() {
-        item.button?.title = !tapOK || !Permissions.missing().isEmpty ? "!" : state == .idle ? "◦" : state == .recording ? "●" : "…"
+        item.button?.title = !tapOK || !Permissions.missing().isEmpty ? "!" : state == .idle ? "◦" : state == .recording ? (latched ? "◉" : "●") : "…"
     }
 
-    private func startRecording() {
-        guard state == .idle else { return }
+    /// Returns false when recording did not begin.
+    private func startRecording() -> Bool {
+        guard state == .idle else { return false }
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
             NSSound.beep(); refreshWarning(); refreshTitle()
-            return
+            return false
         }
         do {
             try recorder.start()
             state = .recording
+            return true
         } catch {
             _ = recorder.stop()
             log("recorder start failed: \(error.localizedDescription)")
             NSSound.beep()
+            return false
         }
+    }
+
+    /// Double-tap: keep recording without holding the key. Icon and a short sound make it obvious.
+    private func enterLatched() {
+        guard state == .recording else { return }
+        latched = true
+        refreshTitle()
+        NSSound(named: "Tink")?.play()
     }
 
     private func cancelRecording() {
@@ -220,6 +298,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async { [self] in state = .idle; NSSound.beep() }
             }
         }
+    }
+
+    @objc private func pasteLastFromMenu() { pasteLast(delay: 0.3) }   // let the menu close first
+
+    /// Re-pastes the last final text (memory only) through the normal clipboard-restore paste path.
+    private func pasteLast(delay: TimeInterval) {
+        guard !lastTranscript.isEmpty, state == .idle else { NSSound.beep(); return }
+        let text = lastTranscript
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [self] in inserter.insert(text) }
     }
 
     @objc private func copyTranscript() {

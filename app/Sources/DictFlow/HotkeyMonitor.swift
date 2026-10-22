@@ -1,13 +1,13 @@
 import AppKit
 
-/// Push-to-talk via a listen-only CGEventTap on its own run-loop thread. Callbacks fire on the main queue.
+/// Push-to-talk via a listen-only CGEventTap on its own run-loop thread. Raw key events are forwarded to the
+/// main queue, where `HotkeyMachine` decides (hold, tap, double-tap latch). Callbacks fire on the main queue.
 final class HotkeyMonitor {
-    static let minHold: TimeInterval = 0.25
-    static let maxHold: TimeInterval = 120
-
-    var onStart: () -> Void = {}
+    var onStart: () -> Bool = { true }   // false = recording could not begin
     var onStop: () -> Void = {}
     var onCancel: () -> Void = {}
+    var onLatch: () -> Void = {}
+    var isBusy: () -> Bool = { false }   // app is transcribing: presses are ignored
 
     var onCaptured: (HotkeyKey) -> Void = { _ in }
     var onCaptureCancelled: () -> Void = {}
@@ -19,19 +19,19 @@ final class HotkeyMonitor {
     private var mask: CGEventFlags { lock.lock(); defer { lock.unlock() }; return CGEventFlags(rawValue: key.flag) }
     // Touched only on the tap thread.
     private var keyIsDown = false
-    private var holding = false
-    private var downAt: Date?
-    private var timer: CFRunLoopTimer?
     private var runLoop: CFRunLoop?
     private var tap: CFMachPort?
     private var thread: Thread?
+    // Touched only on the main queue.
+    private var machine = HotkeyMachine()
 
     init(key: HotkeyKey) { self.key = key }
 
-    /// Takes effect immediately; any hold in progress is dropped on the tap thread's next event.
+    /// Takes effect immediately; any recording in progress is dropped on the main queue.
     func setKey(_ k: HotkeyKey) {
         lock.lock(); key = k; lock.unlock()
         keyIsDown = false
+        DispatchQueue.main.async { self.apply(self.machine.reset()) }
     }
 
     /// The next modifier-only press becomes the new key (reported via onCaptured); Esc cancels.
@@ -73,49 +73,49 @@ final class HotkeyMonitor {
             }
             return
         }
+        let now = Date()
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
-            // Missed events: drop any hold in progress, then re-enable.
-            if holding { finish(cancel: true) }
+            // Missed events: drop any recording in progress, then re-enable.
             keyIsDown = false
+            DispatchQueue.main.async { self.apply(self.machine.reset()) }
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
         case .keyDown:
-            if holding { finish(cancel: true) }   // chord, e.g. Option+2 = @
+            let isEsc = event.getIntegerValueField(.keyboardEventKeycode) == Hotkeys.escKeyCode
+            DispatchQueue.main.async { self.apply(isEsc ? self.machine.esc() : self.machine.chord()) }
         case .flagsChanged:
             guard event.getIntegerValueField(.keyboardEventKeycode) == keyCode else { return }
             if !event.flags.contains(mask) {
+                guard keyIsDown else { return }
                 keyIsDown = false
-                if holding { finish(cancel: heldFor() < Self.minHold) }
+                DispatchQueue.main.async { self.apply(self.machine.release(at: now)) }
             } else if !keyIsDown {
                 keyIsDown = true
-                beginHold()
+                DispatchQueue.main.async { self.apply(self.machine.press(at: now, busy: self.isBusy())) }
             } else {
                 // Flag still set but our key toggled: another key with the same flag (e.g. left Option) is held.
                 keyIsDown = false
-                if holding { finish(cancel: heldFor() < Self.minHold) }
+                DispatchQueue.main.async { self.apply(self.machine.release(at: now)) }
             }
         default: break
         }
     }
 
-    private func heldFor() -> TimeInterval { downAt.map { Date().timeIntervalSince($0) } ?? 0 }
-
-    private func beginHold() {
-        holding = true
-        downAt = Date()
-        let t = CFRunLoopTimerCreateWithHandler(nil, CFAbsoluteTimeGetCurrent() + Self.maxHold, 0, 0, 0) { [weak self] _ in
-            guard let self, self.holding else { return }
-            self.finish(cancel: false)   // auto stop at the cap
+    private func apply(_ actions: [HotkeyMachine.Action]) {
+        for a in actions {
+            switch a {
+            case .start:
+                if onStart() {
+                    // Safety cap: stop a recording that outlives maxHold (hold or latched).
+                    DispatchQueue.main.asyncAfter(deadline: .now() + HotkeyMachine.maxHold + 0.05) { [weak self] in
+                        guard let self else { return }
+                        self.apply(self.machine.tick(at: Date()))
+                    }
+                } else { machine.startFailed() }
+            case .stop: onStop()
+            case .cancel: onCancel()
+            case .latch: onLatch()
+            }
         }
-        timer = t
-        CFRunLoopAddTimer(CFRunLoopGetCurrent(), t, .commonModes)
-        DispatchQueue.main.async { self.onStart() }
-    }
-
-    private func finish(cancel: Bool) {
-        holding = false
-        if let timer { CFRunLoopTimerInvalidate(timer) }
-        timer = nil
-        DispatchQueue.main.async { cancel ? self.onCancel() : self.onStop() }
     }
 }
