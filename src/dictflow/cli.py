@@ -71,7 +71,12 @@ def main(argv=None):
     c.add_argument("--provider", choices=["anthropic", "openai", "none"])
     s = sub.add_parser("serve", help="run the localhost worker")
     s.add_argument("--port", type=int)
-    sub.add_parser("bench", help="benchmark engines on fixtures")
+    b = sub.add_parser("bench", help="benchmark engines on clips with .txt references")
+    b.add_argument("clips", nargs="*", help="wav files or folders (default: tests/fixtures)")
+    b.add_argument("--engines", default="parakeet,whisper")
+    b.add_argument("--runs", type=int, default=3)
+    b.add_argument("--cleanup", action="store_true")
+    b.add_argument("--max-wer", type=float)
     args = p.parse_args(argv)
     if not args.cmd:
         p.print_help()
@@ -92,7 +97,15 @@ def main(argv=None):
         except (RuntimeError, ValueError, OSError) as e:
             print(f"dictflow: error: {e}", file=sys.stderr)
             return 1
-    print(f"{args.cmd}: not implemented yet")
+    if args.cmd == "bench":
+        from . import bench
+
+        try:
+            return bench.run(args.clips, [e.strip() for e in args.engines.split(",") if e.strip()],
+                             args.runs, args.cleanup, args.max_wer)
+        except (RuntimeError, ValueError, OSError) as e:
+            print(f"dictflow: error: {e}", file=sys.stderr)
+            return 1
     return 1
 
 
