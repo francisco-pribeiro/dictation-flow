@@ -87,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         item.menu = menu
 
+        inserter.onNoTarget = { [weak self] in self?.alertNoTarget() }
         inserter.onFallback = { [weak self] msg in
             self?.warningItem.title = msg
             self?.warningItem.isHidden = false
@@ -294,7 +295,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: flow
 
+    private var flashing = false
+
+    /// Distinct sound plus a 1.5 s "✕" on the status item; refreshTitle() takes over again afterwards.
+    private func alertNoTarget() {
+        NSSound(named: "Basso")?.play()
+        flashing = true
+        refreshTitle()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in flashing = false; refreshTitle() }
+    }
+
     private func refreshTitle() {
+        if flashing && state == .idle && tapOK && Permissions.missing().isEmpty { item.button?.title = "✕"; return }
         item.button?.title = !tapOK || !Permissions.missing().isEmpty ? "!" : state == .idle ? "◦" : state == .recording ? (latched ? "◉" : "●") : "…"
     }
 

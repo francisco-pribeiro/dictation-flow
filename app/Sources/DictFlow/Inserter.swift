@@ -60,6 +60,9 @@ final class Inserter {
     /// does not mistake our own transcript for the user's clipboard.
     private var pending: (snap: Snapshot, count: Int)?
 
+    /// Called on main when the paste went out but nothing focused can clearly take text (advisory).
+    var onNoTarget: () -> Void = {}
+
     /// Writes the text, keeping the first snapshot while an earlier insert's restore is still pending.
     func stage(_ text: String) -> (snap: Snapshot, count: Int) {
         let snap = pending?.snap ?? snapshot()
@@ -83,6 +86,11 @@ final class Inserter {
         }
         let (snap, count) = stage(text)
         pasteFunction()
+        // Advisory focus check after the Cmd+V is already posted, off the main thread: adds no paste latency.
+        let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            if FocusProbe.clearlyNoTarget(pid: pid) { DispatchQueue.main.async { self.onNoTarget() } }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
             guard pending?.count == count else { return }   // a newer insert owns the restore
             pending = nil

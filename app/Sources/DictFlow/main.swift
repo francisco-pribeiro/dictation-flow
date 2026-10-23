@@ -44,6 +44,9 @@ case "--pipeline-test":
 case "--clipboard-test":
     if Inserter().selfTest() { print("PASS") } else { print("FAIL"); exit(1) }
 
+case "--focus-test":
+    if FocusProbe.selfTest() { print("PASS") } else { print("FAIL"); exit(1) }
+
 case "--settings-test":
     if Settings.selfTest() { print("PASS") } else { print("FAIL"); exit(1) }
 
@@ -70,6 +73,6 @@ case nil:
 default:
     print("""
     DictFlow - menu-bar dictation client
-    Usage: DictFlow [--convert IN OUT | --pipeline-test FILE [--project DIR] | --clipboard-test | --settings-test | --hotkey-test | --shortcut-test | --timinglog-test | --check-permissions]
+    Usage: DictFlow [--convert IN OUT | --pipeline-test FILE [--project DIR] | --clipboard-test | --focus-test | --settings-test | --hotkey-test | --shortcut-test | --timinglog-test | --check-permissions]
     """)
 }
