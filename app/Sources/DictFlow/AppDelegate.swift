@@ -81,6 +81,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(dictItem)
         menu.delegate = self
         menu.addItem(.separator())
+        let restart = NSMenuItem(title: "Reiniciar", action: #selector(restartApp), keyEquivalent: "r")
+        restart.target = self
+        menu.addItem(restart)
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         item.menu = menu
 
@@ -137,6 +140,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ n: Notification) { worker.shutdown() }
+
+    /// Stops the worker like Quit does, waits for the port to be released, then a detached shell relaunches the bundle
+    /// once this process is gone (`open` gives the new instance the same clean environment as a normal launch).
+    @objc private func restartApp() {
+        let bundle = Bundle.main.bundlePath
+        guard bundle.hasSuffix(".app") else { log("restart: not running from a .app bundle"); return }
+        worker.shutdown()
+        if !worker.waitForPortFree() { log("restart: port \(worker.port) still answers; the new instance will reuse that worker") }
+        let sh = Process()
+        sh.executableURL = URL(fileURLWithPath: "/bin/sh")
+        sh.arguments = ["-c", "while kill -0 \"$0\" 2>/dev/null; do sleep 0.1; done; exec /usr/bin/open -n \"$1\"",
+                        String(ProcessInfo.processInfo.processIdentifier), bundle]
+        do { try sh.run() } catch { log("restart failed: \(error.localizedDescription)"); return }
+        NSApp.terminate(nil)
+    }
 
     // MARK: permissions
 

@@ -88,6 +88,7 @@ export DICTFLOW_SIGN_IDENTITY='DictFlow Local'
 
 # 5. Build the app
 ./build.sh                      # writes build/DictFlow.app
+./build.sh --install            # same, then copies it to /Applications/DictFlow.app (replaced, signature kept)
 
 # 6. Check the build headlessly (no permissions needed)
 uv run pytest -q
@@ -98,9 +99,13 @@ build/DictFlow.app/Contents/MacOS/DictFlow --pipeline-test tests/fixtures/pt_fac
 
 ## Run
 
-```bash
-open build/DictFlow.app
-```
+After `./build.sh --install`, open **DictFlow** from Spotlight (Cmd+Space, "DictFlow"), or `open /Applications/DictFlow.app`. To update after code changes: `DICTFLOW_SIGN_IDENTITY='Vektrum Recorder Local' ./build.sh --install` (quit or use the menu's **Reiniciar** afterwards to load the new build). The installed app still finds the repo and its `.env`: the repo path is baked into its Info.plist at build time (`DictFlowProjectDir`), so keep the repo where it was built, or rebuild after moving it.
+
+Permissions are tied to the signature plus the bundle id (`pt.franciscoribeiro.dictflow`), not to the path, so they persist across rebuilds and reinstalls signed with the same identity. If macOS asks again (new identity, ad-hoc build), the three to grant are Microphone, Accessibility and Input Monitoring.
+
+The menu has **Reiniciar** next to Quit: it stops the worker, waits for the port to be free, and relaunches the app.
+
+Without installing: `open build/DictFlow.app`.
 
 **Rebuilding resets permissions unless you sign with the `DictFlow Local` certificate** (see Signing): with the default ad-hoc signature macOS treats each build as a new app and asks for Microphone, Accessibility and Input Monitoring again.
 
@@ -235,7 +240,7 @@ Add the export to your shell profile to keep it. Grant permissions once after th
 
 ## Usage
 
-**App:** hold **right Option**, speak, release; the text is pasted into the focused app. The menu-bar icon shows idle (`◦`), recording (`●`) or transcribing (`…`); `!` means a permission is missing or the hotkey is not active. The menu has the last transcript (click to copy), Check permissions, Colar/Copiar ultima transcricao, Atalho, Dicionario, and Quit.
+**App:** hold **right Option**, speak, release; the text is pasted into the focused app. The menu-bar icon shows idle (`◦`), recording (`●`) or transcribing (`…`); `!` means a permission is missing or the hotkey is not active. The menu has the last transcript (click to copy), Check permissions, Colar/Copiar ultima transcricao, Atalho, Dicionario, Reiniciar, and Quit.
 
 **CLI** (no permissions needed; run from the repo root):
 

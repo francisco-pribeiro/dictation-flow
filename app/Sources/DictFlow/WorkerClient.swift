@@ -136,6 +136,16 @@ final class WorkerClient {
         return try result.get()
     }
 
+    /// Blocking. Waits until nothing answers on the port (up to `timeout` s). False if a worker is still up.
+    func waitForPortFree(timeout: TimeInterval = 5) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !healthy() { return true }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return !healthy()
+    }
+
     /// Terminate the child we spawned (a reused worker is left alone).
     func shutdown() {
         childLock.lock()
