@@ -25,3 +25,33 @@ def test_timing_suffix_has_no_text():
     line = server.timing_suffix(2.0, res)
     assert line == " decode=5ms asr=200ms cleanup=300ms total=510ms audio=2.0s chars=7 fell_back=true"
     assert "segredo" not in line
+
+
+class _Eng:
+    name = "fake"
+
+    def __init__(self):
+        self.calls = 0
+
+    def transcribe(self, samples, sr, lang="auto", prompt=""):
+        self.calls += 1
+        return "", None
+
+
+def _worker(engine):
+    w = server.Worker.__new__(server.Worker)
+    w.engine, w.lock, w.last_warm = engine, server.threading.Lock(), float("-inf")
+    return w
+
+
+def test_warm_rate_limited_and_skips_busy_or_api():
+    w = _worker(_Eng())
+    assert w.warm() is True
+    assert w.warm() is False  # inside the gap
+    assert w.engine.calls == 1
+    w.last_warm = float("-inf")
+    with w.lock:  # a real transcribe is running
+        assert w.warm() is False
+    g = _worker(_Eng())
+    g.engine.name = "groq"
+    assert g.warm() is False and g.engine.calls == 0

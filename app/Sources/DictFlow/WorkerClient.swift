@@ -100,6 +100,14 @@ final class WorkerClient {
         return try result.get()
     }
 
+    /// Fire-and-forget: asks the worker to run a throwaway decode so the model is hot. Errors ignored.
+    func warm() {
+        var req = URLRequest(url: URL(string: "\(base)/warm")!)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 2
+        URLSession.shared.dataTask(with: req) { _, _, _ in }.resume()
+    }
+
     struct DictionaryInfo { let status: String; let path: String; let count: Int }
 
     /// Blocking. nil body = GET /dictionary; otherwise POST (add/ensure) with a JSON body. The worker owns the file logic.

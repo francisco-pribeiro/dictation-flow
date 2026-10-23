@@ -15,10 +15,18 @@ import numpy as np
 from . import asr, audio, cleanup, config, debug, dictionary
 
 MAX_BODY = 20 * 1024 * 1024
+WARM_MIN_GAP = 20.0  # seconds between throwaway decodes
 
 
 def _ms(t0):
     return round((time.perf_counter() - t0) * 1000)
+
+
+def _quiet(fn):
+    try:
+        fn()
+    except Exception:
+        pass  # a failed warm must never matter
 
 
 def wav_seconds(wav):
@@ -42,6 +50,7 @@ class Worker:
         self.engine = asr.get_engine(engine_name)
         self.lock = threading.Lock()
         self.provider = cleanup.pick_provider()
+        self.last_warm = float("-inf")
 
     def warmup(self):
         self.engine.load()
@@ -50,6 +59,21 @@ class Worker:
         if self.provider != "none":
             # Off the startup path: a hung cleanup endpoint must not keep /health down.
             threading.Thread(target=cleanup.warm, args=(self.provider,), daemon=True).start()
+
+    def warm(self):
+        """Throwaway decode of 1 s of silence so the model is hot when the real audio arrives.
+        Skipped for API engines (no spend), if a decode is running, or if one ran in the last WARM_MIN_GAP s."""
+        now = time.monotonic()
+        if self.engine.name == "groq" or now - self.last_warm < WARM_MIN_GAP:
+            return False
+        if not self.lock.acquire(blocking=False):
+            return False
+        try:
+            self.last_warm = now
+            self.engine.transcribe(np.zeros(audio.SR, dtype=np.float32), audio.SR, "auto", "")
+        finally:
+            self.lock.release()
+        return True
 
     def process(self, wav, do_cleanup, lang):
         timings = {"decode": 0, "asr": 0, "cleanup": 0}
@@ -124,7 +148,9 @@ def make_handler(worker, port):
             t0 = time.perf_counter()
             self._extra = ""
             self._capture = None
-            code, obj = self._dictionary() if urlparse(self.path).path.startswith("/dictionary/") else self._transcribe()
+            path = urlparse(self.path).path
+            code, obj = (self._dictionary() if path.startswith("/dictionary/")
+                         else self._warm() if path == "/warm" else self._transcribe())
             try:
                 self._send(code, obj)
             except OSError:
@@ -132,6 +158,14 @@ def make_handler(worker, port):
             self._log(code, t0, getattr(self, "_extra", ""))
             if self._capture:  # opt-in debug capture, strictly after the response
                 debug.capture(*self._capture)
+
+        def _warm(self):
+            """POST /warm: fire-and-forget; answers at once, the decode runs in the background."""
+            if self._forbidden():
+                self.close_connection = True
+                return 403, {"error": "forbidden"}
+            threading.Thread(target=lambda: _quiet(worker.warm), daemon=True).start()
+            return 202, {"status": "warming"}
 
         def _dictionary(self):
             """POST /dictionary/add {"entry": "..."} and POST /dictionary/ensure: same file logic as the CLI."""

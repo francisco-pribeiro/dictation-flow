@@ -290,6 +290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         do {
             try recorder.start()
             state = .recording
+            worker.warm()
             return true
         } catch {
             _ = recorder.stop()
